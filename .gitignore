@@ -1,0 +1,43 @@
+# Python virtual environments
+backend/venv/
+backend/venv_old/
+venv/
+env/
+ENV/
+*.env
+.env
+backend/.env
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary workspace & render files
+workspace/*
+!workspace/.gitkeep
+backend/workspace/
+backend/downloads/
+*.mp4
+*.mp3
+*.wav
+*.jpg
+*.png
+
+# Log files
+*.log
+backend/app.log
+
+# Large Installer files
+*.exe
+
+# Large RVC models / weights (Upload separately or via Git LFS if needed)
+*.pth
+*.index
+*.onnx
+
+# System & OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
