@@ -1,10 +1,43 @@
-# Dataset files (video/audio gốc - quá nặng và là dữ liệu cá nhân)
-dataset/*.mp4
-dataset/*.wav
+# Python virtual environments
+backend/venv/
+backend/venv_old/
+venv/
+env/
+ENV/
+*.env
+.env
+backend/.env
 
-# V1 model (đã có V2 thay thế)
-MyVoiceModel/
-
-# Python cache
+# Python cache & compiled files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Temporary workspace & render files
+workspace/*
+!workspace/.gitkeep
+backend/workspace/
+backend/downloads/
+*.mp4
+*.mp3
+*.wav
+*.jpg
+*.png
+
+# Log files
+*.log
+backend/app.log
+
+# Large Installer files
+*.exe
+
+# Large RVC models / weights (Upload separately or via Git LFS if needed)
+*.pth
+*.index
+*.onnx
+
+# System & OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
