@@ -1,0 +1,10 @@
+# Dataset files (video/audio gốc - quá nặng và là dữ liệu cá nhân)
+dataset/*.mp4
+dataset/*.wav
+
+# V1 model (đã có V2 thay thế)
+MyVoiceModel/
+
+# Python cache
+__pycache__/
+*.pyc
