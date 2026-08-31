@@ -2,12 +2,14 @@ import codecs
 import textwrap
 
 def generate_ass_file(dialogue_segments, floating_segments, output_path, play_res_x=1080, play_res_y=1920, main_y_pct=0.85):
-    # Tính toán kích thước động dựa trên độ phân giải chuẩn 720x1280
-    scale_y = play_res_y / 1280.0
-    scale_x = play_res_x / 720.0
+    # Cố định hoàn toàn độ phân giải ASS là 720x1280 để font size 38 luôn không đổi và có cùng tỷ lệ trên mọi video
+    play_res_x = 720
+    play_res_y = 1280
+    scale_y = 1.0
+    scale_x = 1.0
     
-    font_size = int(38 * scale_y)
-    outline = int(12 * scale_y)
+    font_size = 38
+    outline = 12
     
     # Dùng style đơn giản nhất, chữ trắng viền đen
     ass_content = f"""[Script Info]
@@ -36,8 +38,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     if dialogue_segments:
         # TÍNH TOÁN MAX CHARS CHO MỖI LINE
-        # Hộp trắng tối đa chiếm 85% chiều rộng màn hình (theo yêu cầu wrap)
-        max_allowed_w = int(play_res_x * 0.85)
+        # Hộp trắng tối đa chiếm 90% chiều rộng màn hình (theo yêu cầu wrap)
+        max_allowed_w = int(play_res_x * 0.90)
         # Font width ước tính
         max_chars_per_line = int(max_allowed_w / (22 * scale_x))
         
@@ -138,8 +140,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     chinese_w = 0
                 
                 # 1. Xác định độ rộng wrap chữ Việt
-                # Yêu cầu: Chỉ xuống dòng khi dòng đầu dài khoảng 85% chiều ngang màn hình
-                target_box_w = play_res_x * 0.85
+                # Yêu cầu: Chỉ xuống dòng khi dòng đầu dài khoảng 90% chiều ngang màn hình
+                target_box_w = play_res_x * 0.90
                 target_chars = int(target_box_w / (22 * scale_x))
 
                 lines = textwrap.wrap(text, width=target_chars)
@@ -173,8 +175,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 chinese_bottom_y = int(seg_max_y_pct * play_res_y)
                 raw_chinese_h = int((seg_max_y_pct - seg_y_pct) * play_res_y)
                 
-                # Giới hạn chiều cao chữ Trung tối đa ~6.5% màn hình (~125px) để loại bỏ nhiễu OCR ở phía trên
-                max_allowed_chinese_h = int(play_res_y * 0.065)
+                # Giới hạn chiều cao chữ Trung tối đa để bao phủ chữ di chuyển
+                max_allowed_chinese_h = int(play_res_y * 0.35)
                 chinese_h = min(raw_chinese_h, max_allowed_chinese_h)
                 
                 # Bỏ qua việc ép box_h theo chinese_h để hộp trắng luôn ôm sát chữ Việt.

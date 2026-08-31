@@ -23,6 +23,17 @@ backend/downloads/
 *.wav
 *.jpg
 *.png
+*.ass
+*.srt
+temp_burn*
+backend/temp_burn*
+debug_out.txt
+err_check_pipeline.txt
+
+# Lock files
+*.lock
+bot_instance.lock
+backend/bot_instance.lock
 
 # Log files
 *.log
@@ -41,3 +52,4 @@ backend/app.log
 Thumbs.db
 .idea/
 .vscode/
+
