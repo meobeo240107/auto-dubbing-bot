@@ -8,7 +8,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def translate_with_gemini(texts, target_lang="vi", api_key="", video_path=None):
+def translate_with_gemini(
+    texts,
+    target_lang="vi",
+    api_key="",
+    video_path=None,
+    context_start_seconds=None,
+    context_end_seconds=None,
+    prior_context=None,
+):
     if not api_key:
         return None
     try:
@@ -26,6 +34,9 @@ Yêu cầu TỐI QUAN TRỌNG:
 8. CHỈ trả về mảng JSON chứa các chuỗi dịch, không giải thích, không markdown.
 Dữ liệu:
 """
+        if prior_context:
+            prompt += "Ngữ cảnh nối tiếp từ batch trước (không dịch lại):\n"
+            prompt += json.dumps(prior_context, ensure_ascii=False) + "\n"
         prompt += json.dumps(texts, ensure_ascii=False)
         
         parts = [{"text": prompt}]
@@ -35,21 +46,40 @@ Dữ liệu:
                 import cv2
                 cap = cv2.VideoCapture(video_path)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                if total_frames > 0:
-                    num_frames = 5
+                num_frames = 5
+                if (
+                    context_start_seconds is not None
+                    and context_end_seconds is not None
+                    and float(context_end_seconds) > float(context_start_seconds)
+                ):
+                    start = max(0.0, float(context_start_seconds))
+                    span = float(context_end_seconds) - start
+                    positions = [
+                        ("msec", (start + span * i / (num_frames + 1)) * 1000.0)
+                        for i in range(1, num_frames + 1)
+                    ]
+                elif total_frames > 0:
                     step = max(total_frames // (num_frames + 1), 1)
-                    for i in range(1, num_frames + 1):
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
-                        ret, frame = cap.read()
-                        if ret:
-                            _, buffer = cv2.imencode('.jpg', frame)
-                            b64_str = base64.b64encode(buffer).decode('utf-8')
-                            parts.append({
-                                "inline_data": {
-                                    "mime_type": "image/jpeg",
-                                    "data": b64_str
-                                }
-                            })
+                    positions = [
+                        ("frame", i * step) for i in range(1, num_frames + 1)
+                    ]
+                else:
+                    positions = []
+                for position_type, position in positions:
+                    if position_type == "msec":
+                        cap.set(cv2.CAP_PROP_POS_MSEC, position)
+                    else:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, position)
+                    ret, frame = cap.read()
+                    if ret:
+                        _, buffer = cv2.imencode('.jpg', frame)
+                        b64_str = base64.b64encode(buffer).decode('utf-8')
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": b64_str
+                            }
+                        })
                 cap.release()
                 print("Đã đính kèm ảnh từ video vào prompt để Gemini hiểu ngữ cảnh.")
             except Exception as img_e:
@@ -134,14 +164,30 @@ Dữ liệu:
         print(f"Lỗi dịch G4F: {e}", flush=True)
     return None
 
-def translate_subtitles(srt_segments, target_lang="vi", api_key="", video_path=None):
+def translate_subtitles(
+    srt_segments,
+    target_lang="vi",
+    api_key="",
+    video_path=None,
+    context_start_seconds=None,
+    context_end_seconds=None,
+    prior_context=None,
+):
     print("Translating subtitles...")
     texts = [seg.content for seg in srt_segments if seg.content]
     translated_texts = None
     
     if api_key and texts:
         print("Trying Gemini API...")
-        translated_texts = translate_with_gemini(texts, target_lang, api_key, video_path)
+        translated_texts = translate_with_gemini(
+            texts,
+            target_lang,
+            api_key,
+            video_path,
+            context_start_seconds=context_start_seconds,
+            context_end_seconds=context_end_seconds,
+            prior_context=prior_context,
+        )
         
     if not translated_texts and texts:
         print("Trying ChatGPT (G4F) API...")

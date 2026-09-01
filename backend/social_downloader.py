@@ -7,6 +7,23 @@ import subprocess
 import sys
 import logging
 
+try:
+    from .pipeline_v2.atomic_io import atomic_replace_file
+    from .pipeline_v2.download_validation import (
+        DownloadValidationError,
+        probe_downloaded_video,
+        require_complete_response,
+        require_partial_content,
+    )
+except ImportError:  # Running telegram_bot.py directly from backend/ on Windows.
+    from pipeline_v2.atomic_io import atomic_replace_file
+    from pipeline_v2.download_validation import (
+        DownloadValidationError,
+        probe_downloaded_video,
+        require_complete_response,
+        require_partial_content,
+    )
+
 logger = logging.getLogger(__name__)
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
@@ -15,6 +32,31 @@ USER_AGENTS = {
     "mobile": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
     "desktop": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 }
+
+# Do not shorten this list: the same originVideoKey is not available from every
+# XHS CDN/ISP combination. Ordering keeps the long-standing clean-origin patch.
+XHS_ORIGIN_CDN_DOMAINS = (
+    'http://sns-video-qn.xhscdn.com',
+    'https://sns-video-qn.xhscdn.com',
+    'http://sns-video-bd.xhscdn.com',
+    'https://sns-video-bd.xhscdn.com',
+    'http://sns-video-qc.xhscdn.com',
+    'https://sns-video-qc.xhscdn.com',
+    'http://sns-video-hw.xhscdn.com',
+    'https://sns-video-hw.xhscdn.com',
+    'http://sns-video-al.xhscdn.com',
+    'https://sns-video-al.xhscdn.com',
+    'http://sns-video-ws.xhscdn.com',
+    'https://sns-video-ws.xhscdn.com',
+    'http://sns-video-ct.xhscdn.com',
+    'https://sns-video-ct.xhscdn.com',
+    'http://sns-video-tx.xhscdn.com',
+    'https://sns-video-tx.xhscdn.com',
+    'http://sns-video-v27.xhscdn.com',
+    'http://sns-video-v26.xhscdn.com',
+    'http://sns-video-v25.xhscdn.com',
+    'http://sns-video-v24.xhscdn.com',
+)
 
 def clean_filename(title: str, max_len: int = 40) -> str:
     """Lọc bỏ ký tự đặc biệt để đặt tên file an toàn trên Windows"""
@@ -26,22 +68,29 @@ def clean_filename(title: str, max_len: int = 40) -> str:
     return cleaned[:max_len] or "social_video"
 
 def download_file_stream(url: str, dest_path: str, headers: dict = None, timeout: tuple = (10, 30)) -> bool:
-    """Tải file theo luồng (chunk) để tiết kiệm RAM và tránh đơ máy"""
+    """Stream to a sibling temp file, ffprobe it, then publish atomically."""
+    temporary_path = f"{dest_path}.{uuid.uuid4().hex}.downloading"
     try:
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         req_headers = headers or {"User-Agent": USER_AGENTS["desktop"]}
         with requests.get(url, headers=req_headers, stream=True, timeout=timeout) as response:
-            response.raise_for_status()
-            with open(dest_path, "wb") as f:
+            require_complete_response(response.status_code, response.headers)
+            with open(temporary_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=512 * 1024):  # 512KB per chunk
                     if chunk:
                         f.write(chunk)
-        return os.path.exists(dest_path) and os.path.getsize(dest_path) > 10000
+                f.flush()
+                os.fsync(f.fileno())
+        if os.path.getsize(temporary_path) <= 10000:
+            raise DownloadValidationError("Downloaded video is unexpectedly small")
+        probe_downloaded_video(temporary_path)
+        atomic_replace_file(temporary_path, dest_path)
+        return True
     except Exception as e:
         logger.error(f"Lỗi tải stream từ {url[:60]}: {e}")
-        if os.path.exists(dest_path):
-            try: os.remove(dest_path)
-            except: pass
+        if os.path.exists(temporary_path):
+            try: os.remove(temporary_path)
+            except OSError: pass
         return False
 
 def extract_douyin_video_id(url: str) -> str:
@@ -119,7 +168,7 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
     Tăng tốc độ tải file từ máy chủ CDN quốc tế lên gấp 5-10 lần và đảm bảo không bị timeout.
     """
     try:
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         req = urllib.request.Request(url, method='HEAD')
         req.add_header('User-Agent', USER_AGENTS["desktop"])
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -128,6 +177,7 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
         if total_size <= 0:
             return False
 
+        workers = max(1, min(int(workers), total_size))
         chunk_size = total_size // workers
         tmp_base = dest_path + "_tmp"
 
@@ -152,6 +202,13 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
                         p_req.add_header('User-Agent', USER_AGENTS["desktop"])
                         p_req.add_header('Range', f'bytes={current_start}-{end}')
                         with urllib.request.urlopen(p_req, timeout=12) as p_resp:
+                            require_partial_content(
+                                getattr(p_resp, "status", p_resp.getcode()),
+                                p_resp.headers,
+                                current_start,
+                                end,
+                                total_size,
+                            )
                             with open(part_name, 'ab') as f:
                                 while True:
                                     if getattr(shared_state, 'stop_requested', False):
@@ -170,7 +227,11 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
                 if current_start == prev_start:
                     # No progress made despite success (EOF reached early)
                     break
-            return part_name, True
+            expected_part_size = end - start + 1
+            return part_name, (
+                current_start == end + 1
+                and os.path.getsize(part_name) == expected_part_size
+            )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = []
@@ -184,16 +245,32 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
             if not ok or not os.path.exists(p):
                 return False
 
-        with open(dest_path, 'wb') as out_f:
+        assembled_path = f"{dest_path}.{uuid.uuid4().hex}.assembling"
+        with open(assembled_path, 'wb') as out_f:
             for p, _ in results:
                 with open(p, 'rb') as in_f:
-                    out_f.write(in_f.read())
-                try: os.remove(p)
-                except: pass
+                    while True:
+                        chunk = in_f.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out_f.write(chunk)
+            out_f.flush()
+            os.fsync(out_f.fileno())
 
-        return os.path.exists(dest_path) and os.path.getsize(dest_path) > 10000
+        if os.path.getsize(assembled_path) != total_size:
+            raise DownloadValidationError("Merged Range download has the wrong byte size")
+        probe_downloaded_video(assembled_path)
+        atomic_replace_file(assembled_path, dest_path)
+        for p, _ in results:
+            try: os.remove(p)
+            except OSError: pass
+        return True
     except Exception as e:
         logger.warning(f"Parallel Range download error for {url[:60]}: {e}")
+        assembled_path = locals().get("assembled_path")
+        if assembled_path and os.path.exists(assembled_path):
+            try: os.remove(assembled_path)
+            except OSError: pass
         return False
 
 # =========================================================================
@@ -263,29 +340,7 @@ def download_xiaohongshu(url: str, output_dir: str, prefix: str) -> tuple:
                     # ƯU TIÊN SỐ 1: Bóc tách originVideoKey (Video GỐC SẠCH 100% KHÔNG WATERMARK/LOGO)
                     origin_key = video.get("consumer", {}).get("originVideoKey")
                     if origin_key:
-                        origin_domains = [
-                            'http://sns-video-qn.xhscdn.com',
-                            'https://sns-video-qn.xhscdn.com',
-                            'http://sns-video-bd.xhscdn.com',
-                            'https://sns-video-bd.xhscdn.com',
-                            'http://sns-video-qc.xhscdn.com',
-                            'https://sns-video-qc.xhscdn.com',
-                            'http://sns-video-hw.xhscdn.com',
-                            'https://sns-video-hw.xhscdn.com',
-                            'http://sns-video-al.xhscdn.com',
-                            'https://sns-video-al.xhscdn.com',
-                            'http://sns-video-ws.xhscdn.com',
-                            'https://sns-video-ws.xhscdn.com',
-                            'http://sns-video-ct.xhscdn.com',
-                            'https://sns-video-ct.xhscdn.com',
-                            'http://sns-video-tx.xhscdn.com',
-                            'https://sns-video-tx.xhscdn.com',
-                            'http://sns-video-v27.xhscdn.com',
-                            'http://sns-video-v26.xhscdn.com',
-                            'http://sns-video-v25.xhscdn.com',
-                            'http://sns-video-v24.xhscdn.com',
-                        ]
-                        for dom in origin_domains:
+                        for dom in XHS_ORIGIN_CDN_DOMAINS:
                             test_origin_url = f"{dom}/{origin_key}"
                             try:
                                 h_res = requests.head(test_origin_url, headers=headers, timeout=4)
@@ -388,17 +443,25 @@ def download_social_video(url: str, output_dir: str, prefix: str) -> tuple:
     ]
     
     try:
+        configured_timeout = float(
+            os.getenv("SOCIAL_DOWNLOAD_TIMEOUT_SECONDS", "0")
+        )
         proc = subprocess.run(
             cmd_download,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=configured_timeout if configured_timeout > 0 else None,
             creationflags=CREATE_NO_WINDOW
         )
         
         downloaded = [f for f in os.listdir(output_dir) if f.startswith(prefix) and f.endswith(".mp4")]
         if downloaded:
             final_path = os.path.join(output_dir, downloaded[0])
+            try:
+                probe_downloaded_video(final_path)
+            except DownloadValidationError as probe_error:
+                logger.warning("yt-dlp output failed ffprobe validation: %s", probe_error)
+                return False, "", "", str(probe_error)
             return True, final_path, downloaded[0], ""
         else:
             return False, "", "", proc.stderr[:400] if proc.stderr else "Không tìm thấy file sau khi tải"

@@ -22,9 +22,25 @@ Công cụ tự động tải video, tách âm thanh nhân vật (Demucs), nhậ
    cd backend
    python -m venv venv
    .\venv\Scripts\activate
+   cd ..
+   # Cài PyTorch + TorchAudio CUDA phù hợp driver NVIDIA trước.
+   # Chọn lệnh Windows chính xác tại https://pytorch.org/get-started/locally/
    pip install -r requirements.txt
+   cd backend
    ```
 2. Chạy Telegram Bot:
    ```bash
    python telegram_bot.py
    ```
+
+## Pipeline v2 (opt-in)
+
+Pipeline cũ vẫn là mặc định. Pipeline v2 bổ sung checkpoint theo stage, process
+GPU riêng, timing solver, FFmpeg ducking/loudness và QC gate. Xem hướng dẫn bật
+`shadow`/`v2`, feature flag và rollback tại
+[`docs/pipeline_v2_rollout.md`](docs/pipeline_v2_rollout.md).
+
+Pipeline v2 giới hạn tài nguyên theo batch thay vì theo độ dài video. Vì vậy cùng
+một luồng xử lý được dùng cho video ngắn và video dài: dịch/OCR/TTS/RVC có batch
+checkpoint, mixer tạo voice bus phân tầng để không vượt giới hạn dòng lệnh
+Windows, còn FFmpeg/Demucs/Whisper tiếp tục xử lý streaming hoặc theo segment.

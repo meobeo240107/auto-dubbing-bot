@@ -3,14 +3,20 @@ import srt
 from datetime import timedelta
 from faster_whisper import WhisperModel
 
-def extract_subtitles_whisper(audio_path, output_srt_path):
+def extract_subtitles_whisper(audio_path, output_srt_path, num_workers=2):
     print(f"Transcribing {audio_path} with Faster-Whisper Large-v3...")
     import torch, gc
     num_threads = max((os.cpu_count() or 4) - 1, 2)
+    worker_count = max(1, int(num_workers))
     
     if torch.cuda.is_available():
         print(f"🚀 CUDA detected: {torch.cuda.get_device_name(0)}. Loading Whisper Large-v3...")
-        model = WhisperModel("large-v3", device="cuda", compute_type="int8_float16", num_workers=2)
+        model = WhisperModel(
+            "large-v3",
+            device="cuda",
+            compute_type="int8_float16",
+            num_workers=worker_count,
+        )
     else:
         print(f"⚡ Loading Whisper Large-v3 on CPU ({num_threads} threads)...")
         model = WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=num_threads)
@@ -81,4 +87,3 @@ def extract_subtitles_whisper(audio_path, output_srt_path):
 def save_srt(srt_segments, output_path):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(srt.compose(srt_segments, reindex=False))
-

@@ -8,6 +8,7 @@ import sys
 import asyncio
 import time
 import subprocess
+from pathlib import Path
 
 # CẤP CỨU: Chặn VĨNH VIỄN tất cả các cửa sổ terminal (cmd) đen nháy lên do các thư viện bên thứ 3 (Whisper, PyDub, OCR) gọi ngầm ffmpeg.
 if os.name == 'nt':
@@ -84,6 +85,62 @@ async def safe_edit_status(status_msg, text, parse_mode=None, retries=3):
             logger.warning(f"Lỗi cập nhật status Telegram (Lần {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
                 await asyncio.sleep(1.0)
+
+
+async def run_pipeline_v2_for_telegram(
+    video_path, out_dir, final_video, status_msg, delivery_copy_path=None
+):
+    """Run the opt-in v2 pipeline while legacy remains the default."""
+
+    from pipeline_v2.config import PipelineSettings
+    from pipeline_v2.video_pipeline import (
+        VideoPipelineRequest,
+        VideoPipelineRunner,
+        discover_rvc_model,
+    )
+
+    settings = PipelineSettings.from_env()
+    rvc_model = discover_rvc_model(Path(WORKSPACE))
+
+    async def progress(stage, state):
+        await safe_edit_status(
+            status_msg,
+            "⚙️ Pipeline v2: `{}` — {}".format(stage, state),
+            parse_mode="Markdown",
+        )
+
+    request = VideoPipelineRequest(
+        video_path=Path(video_path),
+        job_directory=Path(out_dir),
+        output_path=Path(final_video),
+        delivery_copy_path=(
+            Path(delivery_copy_path) if delivery_copy_path else None
+        ),
+        settings=settings,
+        api_key=GEMINI_API_KEY,
+        voice_source="rvc" if rvc_model else "edge",
+        voice_param=str(rvc_model) if rvc_model else "vi-VN-HoaiMyNeural",
+        rvc_model_path=rvc_model,
+        progress=progress,
+    )
+    return await VideoPipelineRunner(request).run()
+
+
+def snapshot_legacy_telegram_run(
+    video_path, out_dir, artifacts, run_started_at_epoch=None
+):
+    from pipeline_v2.config import PipelineMode, PipelineSettings
+
+    if PipelineSettings.from_env().mode is not PipelineMode.SHADOW:
+        return
+    from pipeline_v2.shadow import snapshot_completed_legacy_run
+
+    snapshot_completed_legacy_run(
+        Path(video_path),
+        Path(out_dir) / "pipeline_v2_shadow",
+        artifacts,
+        run_started_at_epoch=run_started_at_epoch,
+    )
 
 # ===== LỆNH /start =====
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,7 +221,11 @@ async def cmd_batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async def telegram_progress(msg: str):
         try:
-            await status_msg.edit_text(f"📁 *Batch Processing (`{input_dir}`):*\n\n{msg}", parse_mode="Markdown")
+            await safe_edit_status(
+                status_msg,
+                f"📁 *Batch Processing (`{input_dir}`):*\n\n{msg}",
+                parse_mode="Markdown",
+            )
         except Exception:
             pass
             
@@ -225,11 +286,19 @@ async def send_video_safely(context, chat_id, final_video, caption, status_msg, 
                 chat_id=chat_id, video=vf, caption=caption,
                 supports_streaming=True, read_timeout=600, write_timeout=600, connect_timeout=600
             )
-        await status_msg.edit_text(f"✅ *Hoàn tất!*\n`{url_or_filename}`", parse_mode="Markdown")
+        await safe_edit_status(
+            status_msg,
+            f"✅ *Hoàn tất!*\n`{url_or_filename}`",
+            parse_mode="Markdown",
+        )
         return
 
     # Nếu file quá lớn (do chất lượng 720p ép buộc), tiến hành cắt nhỏ video bằng FFmpeg (copy codec không làm giảm chất lượng)
-    await status_msg.edit_text(f"✂️ *Video gốc quá lớn ({file_size // (1024*1024)}MB)!*\nBot đang giữ nguyên chất lượng cao (>720p) và tự động cắt thành các phần <50MB để gửi cho bạn...", parse_mode="Markdown")
+    await safe_edit_status(
+        status_msg,
+        f"✂️ *Video gốc quá lớn ({file_size // (1024*1024)}MB)!*\nBot đang giữ nguyên chất lượng cao (>720p) và tự động cắt thành các phần <50MB để gửi cho bạn...",
+        parse_mode="Markdown",
+    )
     
     import math
     import subprocess
@@ -258,7 +327,11 @@ async def send_video_safely(context, chat_id, final_video, caption, status_msg, 
         
         for i, part in enumerate(parts, 1):
             if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
-            await status_msg.edit_text(f"📤 Đang gửi phần {i}/{len(parts)}...", parse_mode="Markdown")
+            await safe_edit_status(
+                status_msg,
+                f"📤 Đang gửi phần {i}/{len(parts)}...",
+                parse_mode="Markdown",
+            )
             part_caption = f"{caption}\n\n(Phần {i}/{len(parts)})" if i == 1 else f"🎬 Phần {i}/{len(parts)}"
             with open(part, 'rb') as vf:
                 await context.bot.send_video(
@@ -266,11 +339,18 @@ async def send_video_safely(context, chat_id, final_video, caption, status_msg, 
                     supports_streaming=True, read_timeout=600, write_timeout=600, connect_timeout=600
                 )
         
-        await status_msg.edit_text(f"✅ *Đã gửi thành công {len(parts)} phần video chất lượng cao!*\n`{url_or_filename}`", parse_mode="Markdown")
+        await safe_edit_status(
+            status_msg,
+            f"✅ *Đã gửi thành công {len(parts)} phần video chất lượng cao!*\n`{url_or_filename}`",
+            parse_mode="Markdown",
+        )
         
     except Exception as e:
         logger.error(f"Error splitting video: {e}")
-        await status_msg.edit_text(f"❌ *Lỗi chia nhỏ video:* Không thể gửi file lớn qua Telegram.")
+        await safe_edit_status(
+            status_msg,
+            "❌ *Lỗi chia nhỏ video:* Không thể gửi file lớn qua Telegram.",
+        )
 
 async def video_worker():
     while True:
@@ -284,6 +364,23 @@ async def video_worker():
                         await process_single_url(job['update'], job['context'], job['url'], job['pos'])
                     elif job['type'] == 'video':
                         await process_single_video(job['update'], job['context'], job['file_id'], job['filename'], job['pos'])
+                    elif job['type'] == 'resume_v2':
+                        from pipeline_v2.config import PipelineSettings
+                        from pipeline_v2.resume import resume_video_job
+
+                        resumable = job['job']
+
+                        async def resume_progress(job_id, stage, state):
+                            logger.info(
+                                "[resume:%s] %s: %s", job_id, stage, state
+                            )
+
+                        await resume_video_job(
+                            resumable,
+                            PipelineSettings.from_env(),
+                            api_key=GEMINI_API_KEY,
+                            progress=resume_progress,
+                        )
                 else:
                     pos, update, context, url = job
                     await process_single_url(update, context, url, pos)
@@ -367,6 +464,29 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         dubbing_dir = os.path.join(out_dir, "dubbing")
         mixed_audio = os.path.join(out_dir, "mixed.wav")
         final_video = os.path.join(out_dir, f"final_{base_name}.mp4")
+
+        from pipeline_v2.config import PipelineMode, PipelineSettings
+        if PipelineSettings.from_env().mode is PipelineMode.V2:
+            start_time = time.time()
+            downloads_dir = r"D:\banve"
+            os.makedirs(downloads_dir, exist_ok=True)
+            local_save_path = os.path.join(downloads_dir, f"Dubbed_{base_name}.mp4")
+            await run_pipeline_v2_for_telegram(
+                video_path,
+                out_dir,
+                final_video,
+                status_msg,
+                delivery_copy_path=local_save_path,
+            )
+            elapsed_time = int(time.time() - start_time)
+            await safe_edit_status(
+                status_msg,
+                "✅ Pipeline v2 hoàn thành trong {} giây.\n💾 Đã lưu: `{}`".format(
+                    elapsed_time, local_save_path
+                ),
+                parse_mode="Markdown",
+            )
+            return
 
         # ===== BƯỚC 2: TÁCH ÂM THANH =====
         start_time = time.time()
@@ -518,6 +638,27 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
         res = await asyncio.to_thread(process_video, video_path, sub_file_to_use, mixed_audio, final_video, main_y_pct=y_pct, delogo=False)
         if not res: raise Exception("Tiến trình render video bị lỗi hoặc đã bị hủy bằng lệnh /stop!")
+
+        try:
+            snapshot_legacy_telegram_run(
+                video_path,
+                out_dir,
+                {
+                    "extract_audio": {"original_audio": Path(original_audio)},
+                    "demucs": {
+                        "vocals": Path(vocals_audio),
+                        "background": Path(no_vocals_audio),
+                    },
+                    "transcribe": {"srt": Path(srt_original)},
+                    "translate": {"srt": Path(srt_translated)},
+                    "tts": {"dubbing_directory": Path(dubbing_dir)},
+                    "mix": {"mixed_audio": Path(mixed_audio)},
+                    "render": {"final_video": Path(final_video)},
+                },
+                run_started_at_epoch=start_time,
+            )
+        except Exception as shadow_error:
+            logger.warning("Shadow manifest warning: %s", shadow_error)
 
         caption_lines = [f"🎬 Video đã lồng tiếng Việt\n"]
         
@@ -703,6 +844,28 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         final_video = os.path.join(out_dir, f"final_{base_name}.mp4")
 
         start_time = time.time()
+        from pipeline_v2.config import PipelineMode, PipelineSettings
+        if PipelineSettings.from_env().mode is PipelineMode.V2:
+            downloads_dir = r"D:\banve"
+            os.makedirs(downloads_dir, exist_ok=True)
+            local_save_path = os.path.join(downloads_dir, f"Dubbed_{base_name}.mp4")
+            await run_pipeline_v2_for_telegram(
+                video_path,
+                out_dir,
+                final_video,
+                status_msg,
+                delivery_copy_path=local_save_path,
+            )
+            elapsed_time = int(time.time() - start_time)
+            await safe_edit_status(
+                status_msg,
+                "✅ Pipeline v2 hoàn thành trong {} giây.\n💾 Đã lưu: `{}`".format(
+                    elapsed_time, local_save_path
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
         await safe_edit_status(status_msg, "🎧 Đang tách âm thanh...")
         import shared_state
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
@@ -811,6 +974,27 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         res = await asyncio.to_thread(process_video, video_path, sub_file_to_use, mixed_audio, final_video, main_y_pct=y_pct, delogo=False)
         if not res: raise Exception("Tiến trình render video bị lỗi hoặc đã bị hủy bằng lệnh /stop!")
 
+        try:
+            snapshot_legacy_telegram_run(
+                video_path,
+                out_dir,
+                {
+                    "extract_audio": {"original_audio": Path(original_audio)},
+                    "demucs": {
+                        "vocals": Path(vocals_audio),
+                        "background": Path(no_vocals_audio),
+                    },
+                    "transcribe": {"srt": Path(srt_original)},
+                    "translate": {"srt": Path(srt_translated)},
+                    "tts": {"dubbing_directory": Path(dubbing_dir)},
+                    "mix": {"mixed_audio": Path(mixed_audio)},
+                    "render": {"final_video": Path(final_video)},
+                },
+                run_started_at_epoch=start_time,
+            )
+        except Exception as shadow_error:
+            logger.warning("Shadow manifest warning: %s", shadow_error)
+
         caption_lines = [f"🎬 Video đã lồng tiếng Việt\n"]
         try:
             import shutil
@@ -837,7 +1021,7 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
             
         # Tạm thời không gửi video qua Telegram để tiết kiệm mạng (chỉ lưu ổ đĩa)
         # await send_video_safely(context, update.message.chat_id, final_video, caption, status_msg, filename)
-        await status_msg.edit_text(caption)
+        await safe_edit_status(status_msg, caption)
 
         # ===== DỌN DẸP RÁC (TRÁNH LỖI FULL Ổ CỨNG) =====
         # try:
@@ -855,6 +1039,29 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ===== KHỞI CHẠY BOT =====
+async def enqueue_interrupted_v2_jobs(application):
+    """Put interrupted v2 jobs ahead of newly submitted work after restart."""
+
+    global worker_task
+    from pipeline_v2.config import PipelineMode, PipelineSettings
+
+    settings = PipelineSettings.from_env()
+    if settings.mode is not PipelineMode.V2:
+        return
+    from pipeline_v2.resume import find_resumable_jobs
+
+    resumable_jobs = find_resumable_jobs(Path(WORKSPACE))
+    for resumable in resumable_jobs:
+        await global_queue.put({"type": "resume_v2", "job": resumable})
+        logger.info(
+            "Queued interrupted pipeline v2 job %s from stage %s",
+            resumable.job_id,
+            resumable.next_stage,
+        )
+    if resumable_jobs and (worker_task is None or worker_task.done()):
+        worker_task = application.create_task(video_worker())
+
+
 def main():
     # Dam bao chi co duy nhat 1 tien trinh Telegram Bot chay tai 1 thoi diem
     import msvcrt
@@ -900,7 +1107,13 @@ def main():
                 write_timeout=120,
                 pool_timeout=120,
             )
-            app = Application.builder().token(BOT_TOKEN).request(request).build()
+            app = (
+                Application.builder()
+                .token(BOT_TOKEN)
+                .request(request)
+                .post_init(enqueue_interrupted_v2_jobs)
+                .build()
+            )
 
             # Đăng ký handlers
             app.add_handler(CommandHandler("start", cmd_start))
@@ -921,4 +1134,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

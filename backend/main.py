@@ -1,12 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import os
-import shutil
 import asyncio
-import json
+from pathlib import Path
 
-from ai_utils import extract_subtitles_whisper, translate_subtitles, save_srt, generate_dubbing_audio
+from ai.transcription import extract_subtitles_whisper, save_srt
+from ai.translation import translate_subtitles
+from ai.voice_cloning import generate_dubbing_audio
 from video_utils import extract_audio_from_video, mix_audio_pydub, process_video
 
 app = FastAPI()
@@ -19,13 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-WORKSPACE = "C:/Users/admin/.gemini/antigravity/scratch/video-dubbing-app/workspace"
+BASE_DIR = Path(__file__).resolve().parent
+WORKSPACE = os.getenv("AUTODUB_WORKSPACE", str(BASE_DIR.parent / "workspace"))
+OUTPUT_DIR = os.getenv("AUTODUB_OUTPUT_DIR", r"D:\banve")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 os.makedirs(WORKSPACE, exist_ok=True)
 
 @app.get("/api/logs")
 async def api_get_logs():
     """Trả về 100 dòng log mới nhất của bot."""
-    log_file = "C:/Users/admin/.gemini/antigravity/scratch/video-dubbing-app/backend/app.log"
+    log_file = str(BASE_DIR / "app.log")
     if not os.path.exists(log_file):
         return {"logs": "Chưa có log nào."}
     
@@ -57,7 +61,12 @@ async def api_generate_subtitles(video_path: str = Form(...), target_lang: str =
         srt_segments = extract_subtitles_whisper(original_audio, srt_original)
 
         # 3. Translate
-        translated_segments = translate_subtitles(srt_segments, target_lang)
+        translated_segments = translate_subtitles(
+            srt_segments,
+            target_lang,
+            api_key=GEMINI_API_KEY,
+            video_path=video_path,
+        )
         save_srt(translated_segments, srt_translated)
 
         # Prepare response data
@@ -115,7 +124,12 @@ async def api_process_video(
         srt_segments = extract_subtitles_whisper(original_audio, srt_original)
 
         # 3. Translate
-        translated_segments = translate_subtitles(srt_segments, target_lang)
+        translated_segments = translate_subtitles(
+            srt_segments,
+            target_lang,
+            api_key=api_key or GEMINI_API_KEY,
+            video_path=video_path,
+        )
         save_srt(translated_segments, srt_translated)
 
         # 4. Generate TTS dubbing
@@ -130,13 +144,27 @@ async def api_process_video(
         mix_audio_pydub(original_audio, dubbing_audio_files, mixed_audio)
 
         # 6. Final render: Blur + Subtitles + Audio → Output video
-        process_video(video_path, srt_translated, mixed_audio, final_video,
-                      font_name=font_name, font_color=font_color, font_weight=font_weight)
+        rendered = process_video(
+            video_path,
+            srt_translated,
+            mixed_audio,
+            final_video,
+            font_name=font_name,
+            font_color=font_color,
+            font_weight=font_weight,
+        )
+        if not rendered:
+            raise RuntimeError("Final video render failed")
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        published_video = os.path.join(OUTPUT_DIR, f"Dubbed_{base_name}.mp4")
+        from pipeline_v2.atomic_io import atomic_copy_file
+
+        atomic_copy_file(final_video, published_video)
 
         return {
             "status": "success",
-            "final_video": final_video,
-            "message": f"Xuất video thành công: {final_video}"
+            "final_video": published_video,
+            "message": f"Xuất video thành công: {published_video}"
         }
     except Exception as e:
         import traceback
@@ -168,50 +196,27 @@ async def api_process_url(
     font_weight: int = Form(1)
 ):
     """Tải video từ URL (Xiaohongshu, TikTok, YouTube...) rồi xử lý toàn bộ."""
-    import subprocess
-    import sys
-    CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
-    import re
     import time
-    import sys
 
     download_dir = os.path.join(WORKSPACE, "downloads")
     os.makedirs(download_dir, exist_ok=True)
 
     # Tạo tên file duy nhất
     timestamp = str(int(time.time()))
-    output_template = os.path.join(download_dir, f"{timestamp}_%(title).30s.%(ext)s")
-
     try:
-        # 1. Tải video bằng yt-dlp
-        cmd_download = [
-            sys.executable, "-m", "yt_dlp",
-            "-f", "best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "-o", output_template,
-            "--no-playlist",
-            "--restrict-filenames",
-            "--socket-timeout", "60",
-            "--retries", "3",
-            url
-        ]
-        result = subprocess.run(cmd_download, capture_output=True, text=True, timeout=300, creationflags=CREATE_NO_WINDOW)
+        # Use the shared no-watermark downloader, including 206 + ffprobe checks.
+        from social_downloader import download_social_video
 
-        if result.returncode != 0:
-            return {"status": "error", "step": "download", "message": result.stderr or "Không thể tải video. Hãy kiểm tra link."}
-
-        # Tìm file vừa tải
-        downloaded_files = [f for f in os.listdir(download_dir) if f.startswith(timestamp) and f.endswith(".mp4")]
-        if not downloaded_files:
-            # Thử tìm file bất kỳ mới tải
-            all_files = sorted(os.listdir(download_dir), key=lambda x: os.path.getmtime(os.path.join(download_dir, x)), reverse=True)
-            downloaded_files = [f for f in all_files if f.endswith(".mp4")]
-
-        if not downloaded_files:
-            return {"status": "error", "step": "download", "message": "Tải xong nhưng không tìm thấy file video."}
-
-        video_path = os.path.join(download_dir, downloaded_files[0])
-        video_filename = downloaded_files[0]
+        success, video_path, _title, download_error = await asyncio.to_thread(
+            download_social_video, url, download_dir, timestamp
+        )
+        if not success:
+            return {
+                "status": "error",
+                "step": "download",
+                "message": download_error or "Không thể tải video.",
+            }
+        video_filename = os.path.basename(video_path)
         base_name = os.path.splitext(video_filename)[0]
 
         # 2. Xử lý pipeline (giống process_video)
@@ -232,7 +237,12 @@ async def api_process_url(
         srt_segments = extract_subtitles_whisper(original_audio, srt_original)
 
         # Translate
-        translated_segments = translate_subtitles(srt_segments, target_lang)
+        translated_segments = translate_subtitles(
+            srt_segments,
+            target_lang,
+            api_key=api_key or GEMINI_API_KEY,
+            video_path=video_path,
+        )
         save_srt(translated_segments, srt_translated)
 
         # Subtitles for response
@@ -257,21 +267,31 @@ async def api_process_url(
         mix_audio_pydub(original_audio, dubbing_audio_files, mixed_audio)
 
         # Final render
-        process_video(video_path, srt_translated, mixed_audio, final_video,
-                      font_name=font_name, font_color=font_color, font_weight=font_weight)
+        rendered = process_video(
+            video_path,
+            srt_translated,
+            mixed_audio,
+            final_video,
+            font_name=font_name,
+            font_color=font_color,
+            font_weight=font_weight,
+        )
+        if not rendered:
+            raise RuntimeError("Final video render failed")
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        published_video = os.path.join(OUTPUT_DIR, f"Dubbed_{base_name}.mp4")
+        from pipeline_v2.atomic_io import atomic_copy_file
+
+        atomic_copy_file(final_video, published_video)
 
         return {
             "status": "success",
             "downloaded_video": video_path,
-            "final_video": final_video,
+            "final_video": published_video,
             "subtitles": subtitles,
-            "message": f"Hoàn tất! Video đã xuất tại: {final_video}"
+            "message": f"Hoàn tất! Video đã xuất tại: {published_video}"
         }
 
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "step": "download", "message": "Tải video quá lâu (>5 phút). Hãy thử link khác."}
-    except FileNotFoundError:
-        return {"status": "error", "step": "download", "message": "Chưa cài yt-dlp. Hãy chạy: pip install yt-dlp"}
     except Exception as e:
         import traceback
         traceback.print_exc()

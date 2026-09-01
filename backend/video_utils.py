@@ -35,7 +35,12 @@ def extract_audio_from_video(video_path, output_audio_path):
         print("FFmpeg extract audio error:", e)
         return False
 
-def separate_vocals_demucs(input_audio_path, output_dir):
+def separate_vocals_demucs(
+    input_audio_path,
+    output_dir,
+    segment_seconds=None,
+    timeout_seconds=300,
+):
     """
     Sử dụng Demucs để tách vocal ra khỏi nhạc nền siêu tốc.
     Trả về (vocals_path, no_vocals_path)
@@ -78,8 +83,21 @@ def separate_vocals_demucs(input_audio_path, output_dir):
             "--shifts", "0",
             "--overlap", "0.1",
             "-o", output_dir
-        ] + device_args
-        subprocess.run(cmd, check=True, timeout=300, creationflags=CREATE_NO_WINDOW)
+        ]
+        # Pipeline v2 passes 6 seconds to cap peak VRAM on RTX 4050 6 GB.
+        # ``None`` deliberately preserves the legacy command line unchanged.
+        if segment_seconds is not None:
+            segment_seconds = float(segment_seconds)
+            if segment_seconds <= 0:
+                raise ValueError("segment_seconds must be positive")
+            cmd.extend(["--segment", "{:g}".format(segment_seconds)])
+        cmd += device_args
+        subprocess.run(
+            cmd,
+            check=True,
+            timeout=timeout_seconds,
+            creationflags=CREATE_NO_WINDOW,
+        )
         
         base_name = os.path.splitext(os.path.basename(input_audio_path))[0]
         demucs_out_dir = os.path.join(output_dir, model_name, base_name)
