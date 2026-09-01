@@ -64,6 +64,8 @@ class GPUStageExecutor:
                 str(response_path),
             ]
             environment = os.environ.copy()
+            environment["PYTHONIOENCODING"] = "utf-8"
+            environment["PYTHONUTF8"] = "1"
             existing_python_path = environment.get("PYTHONPATH", "")
             environment["PYTHONPATH"] = os.pathsep.join(
                 item

@@ -1,4 +1,13 @@
 import os
+import sys
+import io
+if isinstance(sys.stdout, io.TextIOWrapper):
+    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+if isinstance(sys.stderr, io.TextIOWrapper):
+    try: sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+
 import srt
 from datetime import timedelta
 from faster_whisper import WhisperModel

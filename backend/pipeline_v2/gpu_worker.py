@@ -12,6 +12,14 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
+import io
+if isinstance(sys.stdout, io.TextIOWrapper):
+    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+if isinstance(sys.stderr, io.TextIOWrapper):
+    try: sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+
 from .atomic_io import atomic_write_json
 from .batching import chunked
 from .segments import segments_from_dicts, segments_to_dicts
