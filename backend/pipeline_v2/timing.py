@@ -25,8 +25,8 @@ def _creation_flags() -> int:
 
 @dataclass(frozen=True)
 class TimingPolicy:
-    atempo_min: float = 0.92
-    atempo_max: float = 1.40
+    atempo_min: float = 0.75
+    atempo_max: float = 1.45
     estimated_chars_per_second: float = 11.5
     min_segment_seconds: float = 0.35
     max_rewrite_rounds: int = 2
@@ -381,8 +381,8 @@ def fit_audio_to_window(
     required = source_duration / target_seconds
     if required > 1.0:
         applied = min(required, config.atempo_max)
-    elif config.atempo_min <= required < 1.0:
-        applied = required
+    elif required < 1.0:
+        applied = max(required, config.atempo_min)
     else:
         applied = 1.0
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path)]
