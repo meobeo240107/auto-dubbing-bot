@@ -129,7 +129,7 @@ def merge_audio_files_with_delay(video_path, original_audio_path, dubbing_audio_
     # This is a basic implementation. A more robust way is using PyDub to generate a single mixed audio track first.
     pass
     
-def mix_audio_pydub(original_audio_path, dubbing_audio_files, output_mixed_audio_path, original_volume_db=-5, dubbing_volume_db=1):
+def mix_audio_pydub(original_audio_path, dubbing_audio_files, output_mixed_audio_path, original_volume_db=-5, dubbing_volume_db=1, *args, **kwargs):
     """
     Trộn âm thanh bằng PyDub. Giảm âm lượng nhạc nền (-15dB, tức khoảng 15-20%) và chèn giọng đọc AI vào đúng vị trí.
     """
@@ -170,7 +170,7 @@ def mix_audio_pydub(original_audio_path, dubbing_audio_files, output_mixed_audio
         shutil.copy(original_audio_path, output_mixed_audio_path)
         return output_mixed_audio_path
 
-def process_video(video_path, srt_path, mixed_audio_path, output_video_path, font_name="Arial", font_color="&H00FFFFFF", font_weight=1, main_y_pct=0.75, delogo=True):
+def process_video(video_path, srt_path, mixed_audio_path, output_video_path, font_name="Arial", font_color="&H00FFFFFF", font_weight=1, main_y_pct=0.75, delogo=True, *args, **kwargs):
     """
     Dùng ffmpeg để chèn hardsub, xóa sạch watermark gốc và ghép âm thanh mới.
     """
