@@ -24,8 +24,8 @@ def extract_audio_from_video(video_path, output_audio_path):
     try:
         cmd = (
             ffmpeg
-            .input(video_path)
-            .output(output_audio_path, acodec='pcm_s16le', ac=2, ar='44100')
+            .input(str(video_path))
+            .output(str(output_audio_path), acodec='pcm_s16le', ac=2, ar='44100')
             .overwrite_output()
             .compile()
         )
