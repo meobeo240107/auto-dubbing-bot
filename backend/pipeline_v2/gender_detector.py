@@ -1,4 +1,4 @@
-﻿"""Speaker gender detection using fundamental frequency (F0) pitch estimation."""
+"""Speaker gender detection using fundamental frequency (F0) pitch estimation."""
 
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ def detect_segment_gender(
             return fallback_gender
             
         median_f0 = float(np.median(valid_f0))
-        # Pitch < 165 Hz is male, >= 165 Hz is female
-        return "male" if median_f0 < 165.0 else "female"
+        # Pitch < 190 Hz is male (confident young male & adult male), >= 190 Hz is female
+        return "male" if median_f0 < 190.0 else "female"
     except Exception as exc:
         logger.debug("Gender detection fallback for %.2f-%.2f: %s", start_sec, end_sec, exc)
         return fallback_gender

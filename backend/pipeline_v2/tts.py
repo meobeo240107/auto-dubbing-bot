@@ -48,9 +48,14 @@ async def generate_tts_audio_v2(
             text = str(segment.content).strip()
             seg_gender = str(getattr(segment, "gender", "female") or "female").lower()
             if seg_gender == "male":
-                await generate_tts_edge(
-                    text, str(raw), "vi-VN-NamMinhNeural", rate="+5%", pitch="+0Hz"
-                )
+                try:
+                    await asyncio.to_thread(
+                        _run_capcut_tts, text, str(raw), "BV075_streaming"
+                    )
+                except Exception:
+                    await generate_tts_edge(
+                        text, str(raw), "vi-VN-NamMinhNeural", rate="+5%", pitch="+0Hz"
+                    )
             elif voice_source == "fpt":
                 try:
                     await generate_tts_fpt(text, str(raw), api_key, voice="banmai")
