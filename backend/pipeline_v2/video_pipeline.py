@@ -704,6 +704,12 @@ class VideoPipelineRunner:
                 segment_payload = segments_to_dicts(segments)
             if not segment_payload:
                 raise RuntimeError("Whisper returned no speech segments")
+            from .gender_detector import enrich_segments_with_gender
+            runtime_segs = segments_from_dicts(segment_payload)
+            enriched_segs = await asyncio.to_thread(
+                enrich_segments_with_gender, runtime_segs, speech
+            )
+            segment_payload = segments_to_dicts(enriched_segs)
             return [
                 self.artifact_store.put_file("transcript/original.srt", srt_path),
                 self.artifact_store.put_json(
@@ -1110,37 +1116,51 @@ class VideoPipelineRunner:
                 prefix="rvc-batch-", dir=self.work_directory
             ) as work:
                 work_path = Path(work)
-                items = [
-                    {
-                        "index": info["index"],
-                        "input_path": str(self._artifact_path(info["artifact_key"])),
-                        "output_path": str(
-                            work_path / "{}_rvc.wav".format(info["index"])
-                        ),
-                    }
-                    for info in batch
-                ]
-                payload = {
-                    "model_path": str(self.request.rvc_model_path),
-                    "items": items,
-                }
-                if self.request.settings.enable_gpu_process_isolation:
-                    result = await asyncio.to_thread(
-                        self.gpu_executor.run,
-                        "rvc",
-                        payload,
-                        self._resource_scaled_timeout(),
-                    )
-                else:
-                    from .gpu_worker import run_request
+                items_to_rvc = []
+                male_items = []
+                for info in batch:
+                    gender = str(info.get("gender", "female") or "female").lower()
+                    inp_path = str(self._artifact_path(info["artifact_key"]))
+                    if gender == "male":
+                        male_items.append({
+                            "index": info["index"],
+                            "output_path": inp_path,
+                        })
+                    else:
+                        items_to_rvc.append({
+                            "index": info["index"],
+                            "input_path": inp_path,
+                            "output_path": str(
+                                work_path / "{}_rvc.wav".format(info["index"])
+                            ),
+                        })
 
-                    result = await asyncio.to_thread(
-                        run_request,
-                        {"schema_version": 1, "stage": "rvc", "payload": payload},
-                    )
+                rvc_items_result = []
+                if items_to_rvc:
+                    payload = {
+                        "model_path": str(self.request.rvc_model_path),
+                        "items": items_to_rvc,
+                    }
+                    if self.request.settings.enable_gpu_process_isolation:
+                        result = await asyncio.to_thread(
+                            self.gpu_executor.run,
+                            "rvc",
+                            payload,
+                            self._resource_scaled_timeout(),
+                        )
+                    else:
+                        from .gpu_worker import run_request
+
+                        result = await asyncio.to_thread(
+                            run_request,
+                            {"schema_version": 1, "stage": "rvc", "payload": payload},
+                        )
+                    rvc_items_result = result.get("items", [])
+
+                all_items_result = male_items + rvc_items_result
                 batch_records = []
                 batch_infos = []
-                for item in result["items"]:
+                for item in all_items_result:
                     index = int(item["index"])
                     segment = segment_map[index]
                     fitted = work_path / "{}_fitted.wav".format(index)

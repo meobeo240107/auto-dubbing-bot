@@ -30,6 +30,7 @@ class RuntimeSegment:
     max_y_pct: Optional[float] = None
     best_block: Optional[GeometryBlock] = None
     tracking_blocks: List[GeometryBlock] = field(default_factory=list)
+    gender: str = "female"
 
 
 def _block_to_dict(block: Any) -> Dict[str, Any]:
@@ -73,6 +74,7 @@ def segment_to_dict(segment: Any) -> Dict[str, Any]:
         "max_y_pct": getattr(segment, "max_y_pct", None),
         "best_block": _block_to_dict(best_block) if best_block is not None else None,
         "tracking_blocks": [_block_to_dict(block) for block in tracking],
+        "gender": str(getattr(segment, "gender", "female") or "female"),
     }
 
 
@@ -98,6 +100,7 @@ def segment_from_dict(data: Mapping[str, Any]) -> RuntimeSegment:
         tracking_blocks=[
             _block_from_dict(block) for block in data.get("tracking_blocks", [])
         ],
+        gender=str(data.get("gender", "female") or "female"),
     )
 
 

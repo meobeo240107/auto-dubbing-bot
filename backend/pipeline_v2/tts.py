@@ -46,7 +46,12 @@ async def generate_tts_audio_v2(
             raw = output / "{}_raw.mp3".format(segment.index)
             fitted = output / "{}.mp3".format(segment.index)
             text = str(segment.content).strip()
-            if voice_source == "fpt":
+            seg_gender = str(getattr(segment, "gender", "female") or "female").lower()
+            if seg_gender == "male":
+                await generate_tts_edge(
+                    text, str(raw), "vi-VN-NamMinhNeural", rate="+5%", pitch="+0Hz"
+                )
+            elif voice_source == "fpt":
                 try:
                     await generate_tts_fpt(text, str(raw), api_key, voice="banmai")
                 except FPTQuotaError as exc:
@@ -96,6 +101,7 @@ async def generate_tts_audio_v2(
                 "applied_atempo": fit.applied_atempo,
                 "timing_fits": fit.fits,
                 "content": text,
+                "gender": seg_gender,
             }
 
     tasks = [asyncio.create_task(one(segment)) for segment in segments]
