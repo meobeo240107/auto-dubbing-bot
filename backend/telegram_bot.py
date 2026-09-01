@@ -479,11 +479,21 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 delivery_copy_path=local_save_path,
             )
             elapsed_time = int(time.time() - start_time)
+            mins = elapsed_time // 60
+            secs = elapsed_time % 60
+            time_str = f"{mins} phút {secs} giây" if mins > 0 else f"{secs} giây"
+            remaining = global_queue.qsize()
+            queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
+            caption = (
+                f"✅ *Video đã lồng tiếng Tiếng Việt (Pipeline v2 - Âm thanh Studio)!*\n\n"
+                f"🎬 Video: `{video_title if 'video_title' in locals() else base_name}`\n"
+                f"💾 Đã tự động lưu vào máy: `D:\\banve`\n"
+                f"⏱️ Thời gian xử lý: {time_str}"
+                f"{queue_status}"
+            )
             await safe_edit_status(
                 status_msg,
-                "✅ Pipeline v2 hoàn thành trong {} giây.\n💾 Đã lưu: `{}`".format(
-                    elapsed_time, local_save_path
-                ),
+                caption,
                 parse_mode="Markdown",
             )
             return
@@ -880,11 +890,21 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
                 delivery_copy_path=local_save_path,
             )
             elapsed_time = int(time.time() - start_time)
+            mins = elapsed_time // 60
+            secs = elapsed_time % 60
+            time_str = f"{mins} phút {secs} giây" if mins > 0 else f"{secs} giây"
+            remaining = global_queue.qsize()
+            queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
+            caption = (
+                f"✅ *Video đã lồng tiếng Tiếng Việt (Pipeline v2 - Âm thanh Studio)!*\n\n"
+                f"🎬 Video: `{filename}`\n"
+                f"💾 Đã tự động lưu vào máy: `D:\\banve`\n"
+                f"⏱️ Thời gian xử lý: {time_str}"
+                f"{queue_status}"
+            )
             await safe_edit_status(
                 status_msg,
-                "✅ Pipeline v2 hoàn thành trong {} giây.\n💾 Đã lưu: `{}`".format(
-                    elapsed_time, local_save_path
-                ),
+                caption,
                 parse_mode="Markdown",
             )
             return
