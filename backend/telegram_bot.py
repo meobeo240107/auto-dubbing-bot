@@ -764,6 +764,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global queue_counter, worker_task
     import shared_state
+    shared_state.stop_requested = False
+
+    if global_queue.empty():
+        queue_counter = 0
     
     if worker_task is None or worker_task.done():
         worker_task = asyncio.create_task(video_worker())
@@ -792,6 +796,10 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Người dùng gửi file video trực tiếp qua Telegram (Đẩy vào Queue)."""
     global queue_counter, worker_task
     import shared_state
+    shared_state.stop_requested = False
+
+    if global_queue.empty():
+        queue_counter = 0
     
     if worker_task is None or worker_task.done():
         worker_task = asyncio.create_task(video_worker())
@@ -1141,7 +1149,6 @@ def main():
                 Application.builder()
                 .token(BOT_TOKEN)
                 .request(request)
-                .post_init(enqueue_interrupted_v2_jobs)
                 .build()
             )
 
