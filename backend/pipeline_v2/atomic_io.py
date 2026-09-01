@@ -36,7 +36,7 @@ def atomic_replace_file(staged_path: PathLike, destination_path: PathLike) -> Pa
     if staged.parent.resolve() != destination.parent.resolve():
         raise ValueError("Atomic replacement requires source and destination siblings")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with staged.open("rb") as handle:
+    with staged.open("ab") as handle:
         os.fsync(handle.fileno())
     os.replace(str(staged), str(destination))
     _sync_parent_directory(destination.parent)
