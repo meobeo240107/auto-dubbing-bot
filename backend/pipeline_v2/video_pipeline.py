@@ -134,15 +134,22 @@ def merge_ocr_geometry(
 
 
 def discover_rvc_model(workspace: Path) -> Optional[Path]:
-    model_directory = Path(workspace) / "models" / "rvc"
-    if not model_directory.is_dir():
-        return None
-    for candidate in sorted(model_directory.glob("*.pth")):
-        try:
-            if candidate.stat().st_size > 1024:
-                return candidate
-        except OSError:
+    workspace_path = Path(workspace).resolve()
+    search_dirs = [
+        workspace_path.parent / "MyVoiceModel_v2",
+        workspace_path / "MyVoiceModel_v2",
+        workspace_path.parent / "models" / "rvc",
+        workspace_path / "models" / "rvc",
+    ]
+    for model_directory in search_dirs:
+        if not model_directory.is_dir():
             continue
+        for candidate in sorted(model_directory.glob("*.pth")):
+            try:
+                if candidate.stat().st_size > 1024:
+                    return candidate
+            except OSError:
+                continue
     return None
 
 

@@ -574,12 +574,26 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         # Khôi phục giọng RVC (Đáng yêu)
         rvc_model_path = None
-        models_dir = os.path.join(WORKSPACE, "models", "rvc")
-        if os.path.exists(models_dir):
-            for f in os.listdir(models_dir):
-                if f.endswith(".pth"):
-                    rvc_model_path = os.path.join(models_dir, f)
-                    break
+        search_dirs = [
+            os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
+            os.path.join(WORKSPACE, "..", "MyVoiceModel_v2"),
+            os.path.join(WORKSPACE, "MyVoiceModel_v2"),
+            os.path.join(WORKSPACE, "models", "rvc"),
+            os.path.join(os.path.dirname(__file__), "..", "models", "rvc"),
+        ]
+        for d in search_dirs:
+            if os.path.exists(d):
+                for f in sorted(os.listdir(d)):
+                    if f.endswith(".pth"):
+                        candidate = os.path.join(d, f)
+                        try:
+                            if os.path.getsize(candidate) > 1024:
+                                rvc_model_path = candidate
+                                break
+                        except OSError:
+                            continue
+            if rvc_model_path:
+                break
                     
         v_source = "rvc" if rvc_model_path else "edge"
         if rvc_model_path:
@@ -921,12 +935,26 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
         # Khôi phục giọng RVC (Đáng yêu)
         rvc_model_path = None
-        models_dir = os.path.join(WORKSPACE, "models", "rvc")
-        if os.path.exists(models_dir):
-            for f in os.listdir(models_dir):
-                if f.endswith(".pth"):
-                    rvc_model_path = os.path.join(models_dir, f)
-                    break
+        search_dirs = [
+            os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
+            os.path.join(WORKSPACE, "..", "MyVoiceModel_v2"),
+            os.path.join(WORKSPACE, "MyVoiceModel_v2"),
+            os.path.join(WORKSPACE, "models", "rvc"),
+            os.path.join(os.path.dirname(__file__), "..", "models", "rvc"),
+        ]
+        for d in search_dirs:
+            if os.path.exists(d):
+                for f in sorted(os.listdir(d)):
+                    if f.endswith(".pth"):
+                        candidate = os.path.join(d, f)
+                        try:
+                            if os.path.getsize(candidate) > 1024:
+                                rvc_model_path = candidate
+                                break
+                        except OSError:
+                            continue
+            if rvc_model_path:
+                break
                     
         v_source = "rvc" if rvc_model_path else "edge"
         if rvc_model_path:
