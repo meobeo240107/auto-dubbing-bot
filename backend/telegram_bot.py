@@ -160,6 +160,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "5️⃣ Lồng tiếng Tiếng Việt (Microsoft Neural TTS)\n"
         "6️⃣ Xuất video chất lượng cao lưu vào `D:\\banve`\n\n"
         "📌 *Lệnh hỗ trợ:*\n"
+        "• `/llm` - Cấu hình mô hình AI dịch thuật (Google Gemini / OpenAI GPT-4o / DeepSeek V4)\n"
         "• `/batch` - Tự động quét & edit hàng loạt video trong thư mục `D:\\video_input` trên máy\n"
         "• `/batch D:\\thu_muc` - Chỉ định thư mục chứa video cần edit\n"
         "• `/status` - Kiểm tra trạng thái hàng đợi\n"
@@ -230,6 +231,42 @@ async def cmd_batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
             
     asyncio.create_task(process_batch_folder(input_dir, output_dir, telegram_progress))
+
+async def cmd_llm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xem hoặc chuyển đổi nhà cung cấp AI dịch thuật (Gemini / OpenAI ChatGPT / DeepSeek)."""
+    args = context.args
+    current_provider = os.getenv("LLM_PROVIDER", "auto").lower()
+    
+    gemini_status = "🟢 Đã nạp Key" if os.getenv("GEMINI_API_KEY") else "⚪ Chưa cấu hình"
+    openai_status = "🟢 Đã nạp Key" if os.getenv("OPENAI_API_KEY") else "⚪ Chưa cấu hình"
+    deepseek_status = "🟢 Đã nạp Key" if os.getenv("DEEPSEEK_API_KEY") else "⚪ Chưa cấu hình"
+    
+    if not args:
+        await update.message.reply_text(
+            f"🧠 *CẤU HÌNH NHÀ CUNG CẤP AI DỊCH THUẬT (LLM)*\n\n"
+            f"📍 *Chế độ ưu tiên hiện tại:* `{current_provider.upper()}`\n\n"
+            f"🔹 **Google Gemini (Vision 3.5/3.7):** {gemini_status}\n"
+            f"🔹 **OpenAI ChatGPT (GPT-4o Vision):** {openai_status}\n"
+            f"🔹 **DeepSeek-V4 Series (Văn phong Douyin/TikTok):** {deepseek_status}\n\n"
+            f"👉 *Cách đổi mô hình ưu tiên:*\n"
+            f"• `/llm auto` - Tự động luân chuyển Gemini ➡️ OpenAI ➡️ DeepSeek (Khuyên dùng)\n"
+            f"• `/llm openai` - Ưu tiên OpenAI GPT-4o\n"
+            f"• `/llm deepseek` - Ưu tiên DeepSeek V4\n"
+            f"• `/llm gemini` - Ưu tiên Google Gemini",
+            parse_mode="Markdown"
+        )
+        return
+        
+    choice = args[0].lower().strip()
+    if choice in ("auto", "gemini", "openai", "deepseek"):
+        os.environ["LLM_PROVIDER"] = choice
+        await update.message.reply_text(
+            f"✅ Đã chuyển mô hình dịch thuật chính sang: *{choice.upper()}*!\n\n"
+            f"*(Hệ thống vẫn tự động kích hoạt chế độ Fallback nếu nhà cung cấp này gặp sự cố hoặc hết quota)*",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("❌ Lựa chọn không hợp lệ. Vui lòng chọn: `auto`, `gemini`, `openai`, hoặc `deepseek`.", parse_mode="Markdown")
 
 import shared_state
 shared_state.stop_requested = False
@@ -1178,6 +1215,7 @@ def main():
             app.add_handler(CommandHandler("status", cmd_status))
             app.add_handler(CommandHandler("batch", cmd_batch))
             app.add_handler(CommandHandler("local", cmd_batch))
+            app.add_handler(CommandHandler("llm", cmd_llm))
             app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
