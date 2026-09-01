@@ -31,7 +31,7 @@ def release_ocr_reader():
 def extract_silent_subtitles_from_gaps(gap_segments, target_lang="vi", api_key=None):
     return []
 
-def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=None, srt_segments=None):
+def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=None, srt_segments=None, **kwargs):
     logger.info(f"Bắt đầu OCR toàn diện trên video {video_path}")
     reader = get_ocr_reader()
     

@@ -16,6 +16,7 @@ def translate_with_gemini(
     context_start_seconds=None,
     context_end_seconds=None,
     prior_context=None,
+    **kwargs
 ):
     if not api_key:
         return None
@@ -172,6 +173,9 @@ def translate_subtitles(
     context_start_seconds=None,
     context_end_seconds=None,
     prior_context=None,
+    strict=False,
+    enable_g4f=True,
+    **kwargs
 ):
     print("Translating subtitles...")
     texts = [seg.content for seg in srt_segments if seg.content]
@@ -187,9 +191,10 @@ def translate_subtitles(
             context_start_seconds=context_start_seconds,
             context_end_seconds=context_end_seconds,
             prior_context=prior_context,
+            **kwargs
         )
         
-    if not translated_texts and texts:
+    if not translated_texts and texts and enable_g4f:
         print("Trying ChatGPT (G4F) API...")
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:

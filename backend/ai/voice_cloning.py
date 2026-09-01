@@ -82,7 +82,7 @@ async def generate_tts_fpt(text, output_path, api_key, voice="banmai", speed="0"
 
 rvc_semaphore = asyncio.Semaphore(1)
 
-async def apply_rvc_clone(input_audio, output_audio, model_path):
+async def apply_rvc_clone(input_audio, output_audio, model_path, strict=False, **kwargs):
     async with rvc_semaphore:
         print(f"Applying RVC model from {model_path} to {input_audio}...")
         import traceback
