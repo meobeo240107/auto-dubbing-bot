@@ -202,6 +202,21 @@ def _duration_seconds(probe: Mapping[str, Any]) -> Optional[float]:
     return max(durations) if durations else None
 
 
+def _stream_duration_seconds(
+    probe: Mapping[str, Any], codec_type: str
+) -> Optional[float]:
+    durations = [
+        value
+        for value in (
+            _float_or_none(stream.get("duration"))
+            for stream in probe.get("streams", [])
+            if stream.get("codec_type") == codec_type
+        )
+        if value is not None
+    ]
+    return max(durations) if durations else _duration_seconds(probe)
+
+
 def _streams(probe: Mapping[str, Any], kind: str) -> List[Mapping[str, Any]]:
     return [
         stream
@@ -407,6 +422,11 @@ def _check_segments(path: Path) -> Tuple[Dict[str, Any], List[QCCheck]]:
     invalid_ranges = []
     empty_text = []
     missing_audio = []
+    timing_failures = []
+    timing_overflow_seconds = {}
+    untranslated_source = []
+    timing_metadata_count = 0
+    translation_metadata_count = 0
     numeric_ids = []
     for position, segment in enumerate(segments, 1):
         segment_id = segment.get("id", segment.get("index", position))
@@ -428,6 +448,26 @@ def _check_segments(path: Path) -> Tuple[Dict[str, Any], List[QCCheck]]:
                 audio_path = path.parent / audio_path
             if not audio_path.is_file():
                 missing_audio.append(segment_id)
+        if "timing_fits" in segment:
+            timing_metadata_count += 1
+            actual_duration = _float_or_none(segment.get("actual_audio_duration"))
+            target_duration = _float_or_none(segment.get("target_audio_duration"))
+            if segment.get("timing_fits") is False:
+                timing_failures.append(segment_id)
+            if actual_duration is not None and target_duration is not None:
+                overflow = actual_duration - target_duration
+                if overflow > 0.08:
+                    timing_overflow_seconds[str(segment_id)] = round(overflow, 3)
+                    if segment_id not in timing_failures:
+                        timing_failures.append(segment_id)
+        original_text = str(segment.get("orig_content") or "").strip()
+        if original_text:
+            translation_metadata_count += 1
+            if (
+                original_text == text
+                and any("\u4e00" <= character <= "\u9fff" for character in original_text)
+            ):
+                untranslated_source.append(segment_id)
 
     missing_ids = []
     if numeric_ids:
@@ -443,6 +483,11 @@ def _check_segments(path: Path) -> Tuple[Dict[str, Any], List[QCCheck]]:
             "missing_audio_count": len(missing_audio),
             "missing_ids": missing_ids,
             "duplicate_ids": duplicate_ids,
+            "timing_failure_count": len(timing_failures),
+            "timing_failure_ids": timing_failures,
+            "timing_overflow_seconds": timing_overflow_seconds,
+            "untranslated_source_count": len(untranslated_source),
+            "untranslated_source_ids": untranslated_source,
         }
     )
     problems = invalid_ranges or empty_text or missing_audio or missing_ids or duplicate_ids
@@ -450,13 +495,62 @@ def _check_segments(path: Path) -> Tuple[Dict[str, Any], List[QCCheck]]:
         checks.append(
             QCCheck(
                 "segments",
-                "warning",
+                "error",
                 "Missing or invalid segment data was detected",
                 metrics,
             )
         )
     else:
         checks.append(QCCheck("segments", "pass", "All segment records are complete", metrics))
+    if timing_metadata_count == 0:
+        checks.append(
+            QCCheck("segment_timing", "skipped", "No measured audio timing metadata")
+        )
+    elif timing_failures:
+        checks.append(
+            QCCheck(
+                "segment_timing",
+                "error",
+                "Measured dubbing audio exceeds one or more segment windows",
+                {
+                    "segment_ids": timing_failures,
+                    "overflow_seconds": timing_overflow_seconds,
+                },
+            )
+        )
+    else:
+        checks.append(
+            QCCheck(
+                "segment_timing",
+                "pass",
+                "All measured dubbing audio fits its segment window",
+            )
+        )
+    if translation_metadata_count == 0:
+        checks.append(
+            QCCheck(
+                "translation_fallback",
+                "skipped",
+                "No source translation metadata was supplied",
+            )
+        )
+    elif untranslated_source:
+        checks.append(
+            QCCheck(
+                "translation_fallback",
+                "error",
+                "Chinese source text remained unchanged in translated subtitles",
+                {"segment_ids": untranslated_source},
+            )
+        )
+    else:
+        checks.append(
+            QCCheck(
+                "translation_fallback",
+                "pass",
+                "No unchanged Chinese source fallback was detected",
+            )
+        )
     return metrics, checks
 
 
@@ -662,8 +756,8 @@ def run_report_only_qc(
             report.add("audio_probe", "error", "Could not probe analysis audio: {}".format(exc))
 
         if video_probe is not None and audio_probe is not None:
-            video_duration = _duration_seconds(video_probe)
-            audio_duration = _duration_seconds(audio_probe)
+            video_duration = _stream_duration_seconds(video_probe, "video")
+            audio_duration = _stream_duration_seconds(audio_probe, "audio")
             if video_duration is not None and audio_duration is not None:
                 delta = abs(video_duration - audio_duration)
                 allowed = max(

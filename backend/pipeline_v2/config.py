@@ -48,7 +48,7 @@ def _env_int(environment: Mapping[str, str], name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class PipelineSettings:
-    mode: PipelineMode = PipelineMode.LEGACY
+    mode: PipelineMode = PipelineMode.V2
     enable_stage_cache: bool = False
     enable_parallel_ocr_gemini: bool = False
     enable_adaptive_demucs: bool = False
@@ -93,6 +93,8 @@ class PipelineSettings:
         )
         if any(value <= 0 for value in integer_limits):
             raise ValueError("Pipeline batch and input limits must be positive")
+        if self.mixer_max_inputs_per_pass < 2:
+            raise ValueError("mixer_max_inputs_per_pass must be at least 2")
         if self.mixer_chunk_seconds <= 0:
             raise ValueError("mixer_chunk_seconds must be positive")
 
@@ -101,7 +103,7 @@ class PipelineSettings:
         cls, environment: Optional[Mapping[str, str]] = None
     ) -> "PipelineSettings":
         env = environment if environment is not None else os.environ
-        mode_value = env.get("PIPELINE_MODE", PipelineMode.LEGACY.value).strip().lower()
+        mode_value = env.get("PIPELINE_MODE", PipelineMode.V2.value).strip().lower()
         qc_value = env.get(
             "QC_GATE_POLICY", QCGatePolicy.REPORT_ONLY.value
         ).strip().lower()

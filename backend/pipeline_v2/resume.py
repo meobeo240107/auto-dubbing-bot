@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import PipelineMode, PipelineSettings
+from .artifact_store import hash_file
 from .manifest import ManifestStore
+from .stage_validation import is_real_rvc_model
 from .stage_status import StageStatus
 from .video_pipeline import (
     V2_STAGE_ORDER,
@@ -52,9 +54,13 @@ def _published_outputs_present(manifest: Any) -> bool:
         try:
             candidate = Path(str(item["path"]))
             expected_size = int(item["size_bytes"])
+            expected_sha256 = str(item["sha256"])
         except (KeyError, TypeError, ValueError):
             return False
         if not candidate.is_file() or candidate.stat().st_size != expected_size:
+            return False
+        actual_sha256, _ = hash_file(candidate)
+        if actual_sha256 != expected_sha256:
             return False
     return True
 
@@ -113,27 +119,26 @@ async def resume_video_job(
     job: ResumableVideoJob,
     settings: PipelineSettings,
     api_key: str = "",
+    tts_api_key: str = "",
     progress: Optional[ResumeProgress] = None,
 ) -> VideoPipelineResult:
     if settings.mode is not PipelineMode.V2:
         raise RuntimeError("Automatic resume is active only in PIPELINE_MODE=v2")
-    rvc_model = job.rvc_model_path
-    if not rvc_model or not rvc_model.is_file():
-        rvc_model = discover_rvc_model(job.job_directory.parent)
-    voice_source = (
-        "rvc"
-        if rvc_model
-        else ("edge" if job.voice_source == "rvc" else job.voice_source)
-    )
-    voice_param = (
-        str(rvc_model)
-        if rvc_model
-        else (
-            "vi-VN-HoaiMyNeural"
-            if job.voice_source == "rvc"
-            else job.voice_param
-        )
-    )
+    # Resume must preserve the voice provider recorded in the manifest.  A
+    # globally discoverable RVC model must never turn an Edge/FPT job into an
+    # RVC job, and an RVC job must not silently fall back to a different voice.
+    voice_source = job.voice_source
+    voice_param = job.voice_param
+    rvc_model = None
+    if voice_source == "rvc":
+        rvc_model = job.rvc_model_path
+        if not rvc_model or not is_real_rvc_model(rvc_model):
+            rvc_model = discover_rvc_model(job.job_directory.parent)
+        if not rvc_model:
+            raise RuntimeError(
+                "Cannot resume RVC job: no real .pth model is available"
+            )
+        voice_param = str(rvc_model)
 
     async def report(stage: str, state: str) -> None:
         if progress is None:
@@ -149,6 +154,7 @@ async def resume_video_job(
         delivery_copy_path=job.delivery_copy_path,
         settings=settings,
         api_key=api_key,
+        tts_api_key=tts_api_key,
         target_lang=job.target_lang,
         voice_source=voice_source,
         voice_param=voice_param,

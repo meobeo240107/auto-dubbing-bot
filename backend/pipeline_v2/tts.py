@@ -24,6 +24,7 @@ async def generate_tts_audio_v2(
     voice_param: str = "vi-VN-HoaiMyNeural",
     api_key: str = "",
     policy: TimingPolicy = None,
+    strict_provider: bool = False,
 ) -> List[Dict[str, Any]]:
     """Generate TTS and apply at most the configured light atempo correction."""
 
@@ -48,7 +49,11 @@ async def generate_tts_audio_v2(
             if voice_source == "fpt":
                 try:
                     await generate_tts_fpt(text, str(raw), api_key, voice="banmai")
-                except FPTQuotaError:
+                except FPTQuotaError as exc:
+                    if strict_provider:
+                        raise RuntimeError(
+                            "FPT TTS is unavailable; refusing silent provider fallback"
+                        ) from exc
                     await generate_tts_edge(
                         text, str(raw), "vi-VN-HoaiMyNeural", rate="+5%"
                     )
@@ -85,10 +90,23 @@ async def generate_tts_audio_v2(
                 "path": str(fitted),
                 "start": segment.start.total_seconds(),
                 "end": segment.end.total_seconds(),
+                "source_audio_duration": fit.source_duration_seconds,
+                "target_audio_duration": fit.target_duration_seconds,
                 "actual_audio_duration": fit.output_duration_seconds,
                 "applied_atempo": fit.applied_atempo,
                 "timing_fits": fit.fits,
                 "content": text,
             }
 
-    return list(await asyncio.gather(*(one(segment) for segment in segments)))
+    tasks = [asyncio.create_task(one(segment)) for segment in segments]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        # asyncio.gather does not reliably cancel sibling work when one item
+        # fails. Drain explicit cancellations before the caller removes the
+        # batch temporary directory.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise

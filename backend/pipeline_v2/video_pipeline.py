@@ -29,8 +29,19 @@ from .mixer import FFmpegMixSettings, mix_audio_ffmpeg
 from .models import ArtifactRecord, FingerprintSet, JobManifest, fingerprint_json
 from .qc import QCSettings, evaluate_qc_gate, run_report_only_qc
 from .segments import RuntimeSegment, segment_from_dict, segment_to_dict, segments_from_dicts, segments_to_dicts
+from .stage_validation import (
+    discover_rvc_index_file,
+    is_real_rvc_model,
+    validate_demucs_outputs,
+)
 from .stage_status import StageStatus
-from .timing import GeminiTimingRewriter, TimingPolicy, fit_audio_to_window, solve_segment_timing
+from .timing import (
+    GeminiTimingRewriter,
+    TimingPolicy,
+    fit_audio_to_window,
+    plan_actual_timing_rewrites,
+    solve_segment_timing,
+)
 from .tts import generate_tts_audio_v2
 
 
@@ -52,6 +63,11 @@ V2_STAGE_ORDER = (
     "deliver",
 )
 
+# Bump this value whenever artifact semantics change.  It participates in the
+# manifest fingerprint so an upgraded runner cannot silently reuse output from
+# an older implementation that happened to have the same environment flags.
+PIPELINE_IMPLEMENTATION_VERSION = "2.1.0"
+
 
 class QCGateBlocked(RuntimeError):
     pass
@@ -65,6 +81,7 @@ class VideoPipelineRequest:
     settings: PipelineSettings
     delivery_copy_path: Optional[Path] = None
     api_key: str = ""
+    tts_api_key: str = ""
     target_lang: str = "vi"
     voice_source: str = "edge"
     voice_param: str = "vi-VN-HoaiMyNeural"
@@ -111,6 +128,31 @@ def compose_srt(segments: Iterable[Any]) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+def validate_translated_batch(
+    source: Sequence[RuntimeSegment], translated: Sequence[RuntimeSegment]
+) -> None:
+    """Reject structurally incomplete or unchanged-CJK translation checkpoints."""
+
+    if len(source) != len(translated):
+        raise RuntimeError("Translation batch changed the segment count")
+    for original, result in zip(source, translated):
+        if int(original.index) != int(result.index):
+            raise RuntimeError("Translation batch changed segment identity")
+        source_text = str(original.content).strip()
+        translated_text = str(result.content).strip()
+        if not translated_text:
+            raise RuntimeError(
+                "Translation returned empty text for segment {}".format(original.index)
+            )
+        contains_cjk = any("\u4e00" <= character <= "\u9fff" for character in source_text)
+        if contains_cjk and translated_text == source_text:
+            raise RuntimeError(
+                "Translation left CJK source unchanged for segment {}".format(
+                    original.index
+                )
+            )
+
+
 def merge_ocr_geometry(
     translated: Iterable[Any], ocr_segments: Iterable[Any]
 ) -> List[RuntimeSegment]:
@@ -145,11 +187,8 @@ def discover_rvc_model(workspace: Path) -> Optional[Path]:
         if not model_directory.is_dir():
             continue
         for candidate in sorted(model_directory.glob("*.pth")):
-            try:
-                if candidate.stat().st_size > 1024:
-                    return candidate
-            except OSError:
-                continue
+            if is_real_rvc_model(candidate):
+                return candidate
     return None
 
 
@@ -157,6 +196,26 @@ class VideoPipelineRunner:
     def __init__(self, request: VideoPipelineRequest):
         self.request = request
         self.video_path = Path(request.video_path).resolve()
+        output_path = Path(request.output_path).resolve()
+        if output_path == self.video_path:
+            raise ValueError("Pipeline output_path must not overwrite the input video")
+        if (
+            request.delivery_copy_path
+            and Path(request.delivery_copy_path).resolve() == self.video_path
+        ):
+            raise ValueError("Pipeline delivery_copy_path must not overwrite the input video")
+        if request.voice_source not in {"edge", "fpt", "rvc"}:
+            raise ValueError("voice_source must be edge, fpt or rvc")
+        if request.voice_source == "fpt" and not (
+            request.tts_api_key or request.api_key
+        ):
+            raise ValueError("FPT voice requires an API key")
+        if request.voice_source == "rvc" and (
+            not request.settings.enable_rvc
+            or not request.rvc_model_path
+            or not is_real_rvc_model(request.rvc_model_path)
+        ):
+            raise ValueError("RVC voice requires an enabled, real .pth model file")
         self.job_directory = Path(request.job_directory).resolve()
         self.v2_directory = self.job_directory / "pipeline_v2"
         self.artifact_store = ArtifactStore(self.v2_directory / "artifacts")
@@ -237,12 +296,13 @@ class VideoPipelineRunner:
             timed_segments = merged
 
         await self._execute("tts", lambda: self._tts_stage(timed_segments))
+        final_segments = self._segments_after_tts(timed_segments)
         if self._rvc_enabled():
-            await self._execute("rvc", lambda: self._rvc_stage(timed_segments))
+            await self._execute("rvc", lambda: self._rvc_stage(final_segments))
         else:
             self._skip("rvc", "RVC model unavailable or disabled")
 
-        await self._execute("subtitles", lambda: self._subtitles_stage(timed_segments))
+        await self._execute("subtitles", lambda: self._subtitles_stage(final_segments))
         if self.request.settings.enable_ffmpeg_mix_v2:
             if self.request.settings.enable_legacy_mix_ab:
                 await self._execute("mix_legacy", self._mix_legacy_stage)
@@ -253,7 +313,7 @@ class VideoPipelineRunner:
             await self._execute("mix_legacy", self._mix_legacy_stage)
             self._skip("mix_v2", "ENABLE_FFMPEG_MIX_V2 is false")
         await self._execute("render", self._render_stage)
-        await self._execute("qc", lambda: self._qc_stage(timed_segments))
+        await self._execute("qc", lambda: self._qc_stage(final_segments))
 
         report_payload = self._load_json("qc/qc_report.json")
         gate = evaluate_qc_gate(report_payload, self.request.settings.qc_gate_policy)
@@ -276,16 +336,21 @@ class VideoPipelineRunner:
             "whisper": fingerprint_json("large-v3:int8_float16"),
             "demucs": fingerprint_json("htdemucs:two-stems:segment=6"),
         }
-        if self.request.rvc_model_path and Path(self.request.rvc_model_path).is_file():
+        if self.request.rvc_model_path and is_real_rvc_model(self.request.rvc_model_path):
             model_fingerprints["rvc"], _ = hash_file(self.request.rvc_model_path)
+            rvc_index = discover_rvc_index_file(self.request.rvc_model_path)
+            if rvc_index is not None:
+                model_fingerprints["rvc_index"], _ = hash_file(rvc_index)
         fingerprints = FingerprintSet(
             source_sha256=source_hash,
             config_sha256=fingerprint_json(
                 {
                     **self.request.settings.cache_payload(),
+                    "pipeline_implementation_version": PIPELINE_IMPLEMENTATION_VERSION,
                     "target_lang": self.request.target_lang,
                     "voice_source": self.request.voice_source,
                     "voice_param": self.request.voice_param,
+                    "clean_audio_hint": self.request.clean_audio_hint,
                     "delogo": self.request.delogo,
                 }
             ),
@@ -303,6 +368,22 @@ class VideoPipelineRunner:
                 and existing.is_cache_compatible(fingerprints)
                 and (self.request.settings.enable_stage_cache or not fully_delivered)
             ):
+                current_request = dict(existing.metadata.get("request", {}))
+                requested_output = str(Path(self.request.output_path).resolve())
+                requested_copy = (
+                    str(Path(self.request.delivery_copy_path).resolve())
+                    if self.request.delivery_copy_path
+                    else None
+                )
+                if (
+                    current_request.get("output_path") != requested_output
+                    or current_request.get("delivery_copy_path") != requested_copy
+                ):
+                    existing.invalidate_from("deliver", V2_STAGE_ORDER)
+                    current_request["output_path"] = requested_output
+                    current_request["delivery_copy_path"] = requested_copy
+                    existing.metadata["request"] = current_request
+                    self.manifest_store.save(existing)
                 return existing
             archive = self.manifest_store.path.with_name(
                 "job_manifest.{}.json".format(uuid.uuid4().hex)
@@ -314,6 +395,7 @@ class VideoPipelineRunner:
             stage_names=V2_STAGE_ORDER,
             metadata={
                 "mode": "v2",
+                "pipeline_implementation_version": PIPELINE_IMPLEMENTATION_VERSION,
                 "source_path": str(self.video_path),
                 "source_size_bytes": source_size,
                 "legacy_default_unchanged": True,
@@ -380,6 +462,14 @@ class VideoPipelineRunner:
     ) -> None:
         assert self.manifest is not None
         names = ("ocr", "translate")
+        # A completed stage whose artifacts failed validation must be reset
+        # together with all downstream consumers before it can transition back
+        # to running.  The serial executor already does this; keep the parallel
+        # fast path identical so two corrupt checkpoints remain resumable.
+        for name in names:
+            record = self.manifest.stage(name)
+            if record.status is StageStatus.COMPLETED:
+                self.manifest.invalidate_from(name, V2_STAGE_ORDER)
         for name in names:
             self.manifest.start_stage(name)
         self.manifest_store.save(self.manifest)
@@ -396,8 +486,17 @@ class VideoPipelineRunner:
                 first_error = first_error or result
                 await self._notify(name, "failed")
             else:
-                self.manifest.complete_stage(name, list(result or []))
-                await self._notify(name, "completed")
+                artifacts = list(result or [])
+                if not artifacts:
+                    error = RuntimeError(
+                        "Stage {!r} produced no artifacts".format(name)
+                    )
+                    self.manifest.fail_stage(name, str(error), type(error).__name__)
+                    first_error = first_error or error
+                    await self._notify(name, "failed")
+                else:
+                    self.manifest.complete_stage(name, artifacts)
+                    await self._notify(name, "completed")
         self.manifest_store.save(self.manifest)
         if first_error is not None:
             raise first_error
@@ -450,9 +549,26 @@ class VideoPipelineRunner:
         callback = self.request.progress
         if callback is None:
             return
-        result = callback(stage, state)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = callback(stage, state)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            # Status delivery is observability, not media correctness. A
+            # transient Telegram/UI failure must not corrupt stage state.
+            if self.manifest is not None:
+                warnings = self.manifest.metadata.setdefault("progress_warnings", [])
+                self.manifest.metadata["progress_warning_count"] = (
+                    int(self.manifest.metadata.get("progress_warning_count", 0)) + 1
+                )
+                warnings.append(
+                    {
+                        "stage": stage,
+                        "state": state,
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                    }
+                )
+                del warnings[:-50]
 
     @staticmethod
     def _check_stopped() -> None:
@@ -542,6 +658,7 @@ class VideoPipelineRunner:
                     self._resource_scaled_timeout(),
                 )
                 vocals, background = Path(vocals_value), Path(background_value)
+            validate_demucs_outputs(original, vocals, background)
             return [
                 self.artifact_store.put_file("audio/vocals.wav", vocals),
                 self.artifact_store.put_file("audio/background.wav", background),
@@ -663,8 +780,10 @@ class VideoPipelineRunner:
             checkpoint_key = "translation/batches/{:05d}.json".format(batch_number)
             input_fingerprint = fingerprint_json(
                 {
+                    "pipeline_implementation_version": PIPELINE_IMPLEMENTATION_VERSION,
                     "segments": segments_to_dicts(batch),
                     "target_lang": self.request.target_lang,
+                    "prior_context": prior_context[-3:],
                 }
             )
             checkpoint_path = self.artifact_store.path_for(checkpoint_key)
@@ -673,11 +792,20 @@ class VideoPipelineRunner:
                 try:
                     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
                     if checkpoint.get("input_fingerprint") == input_fingerprint:
-                        translated_batch = segments_from_dicts(checkpoint["segments"])
+                        candidate_batch = segments_from_dicts(checkpoint["segments"])
+                        validate_translated_batch(batch, candidate_batch)
+                        translated_batch = candidate_batch
                         artifacts.append(
                             self.artifact_store.record_existing(checkpoint_key)
                         )
-                except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                except (
+                    OSError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    RuntimeError,
+                    json.JSONDecodeError,
+                ):
                     translated_batch = None
             if translated_batch is None:
                 translated_batch = await asyncio.to_thread(
@@ -689,7 +817,10 @@ class VideoPipelineRunner:
                     context_start_seconds=batch[0].start.total_seconds(),
                     context_end_seconds=batch[-1].end.total_seconds(),
                     prior_context=prior_context[-3:],
+                    strict=True,
+                    enable_g4f=False,
                 )
+                validate_translated_batch(batch, translated_batch)
                 artifacts.append(
                     self.artifact_store.put_json(
                         checkpoint_key,
@@ -758,8 +889,9 @@ class VideoPipelineRunner:
     def _rvc_enabled(self) -> bool:
         return bool(
             self.request.settings.enable_rvc
+            and self.request.voice_source == "rvc"
             and self.request.rvc_model_path
-            and Path(self.request.rvc_model_path).is_file()
+            and is_real_rvc_model(self.request.rvc_model_path)
         )
 
     async def _tts_stage(
@@ -774,17 +906,24 @@ class VideoPipelineRunner:
             source = "edge"
         artifacts: List[ArtifactRecord] = []
         portable_infos: List[Dict[str, Any]] = []
+        actual_rewriter = (
+            GeminiTimingRewriter(self.request.api_key)
+            if self.request.settings.enable_timing_solver and self.request.api_key
+            else None
+        )
         for batch_number, batch in enumerate(
             chunked(list(segments), self.request.settings.tts_batch_segments), 1
         ):
             checkpoint_key = "tts/batches/{:05d}.json".format(batch_number)
             input_fingerprint = fingerprint_json(
                 {
+                    "pipeline_implementation_version": PIPELINE_IMPLEMENTATION_VERSION,
                     "segments": segments_to_dicts(batch),
                     "voice_source": source,
                     "voice_param": self.request.voice_param,
                     "atempo_min": policy.atempo_min,
                     "atempo_max": policy.atempo_max,
+                    "actual_timing_rewrite": actual_rewriter is not None,
                 }
             )
             restored = False
@@ -807,6 +946,16 @@ class VideoPipelineRunner:
                         artifacts.extend(audio_records)
                         artifacts.append(self.artifact_store.record_existing(checkpoint_key))
                         portable_infos.extend(checkpoint["segments"])
+                        restored_segments = checkpoint.get("runtime_segments", [])
+                        restored_by_index = {
+                            int(item["index"]): item
+                            for item in restored_segments
+                            if isinstance(item, dict) and "index" in item
+                        }
+                        for segment in batch:
+                            restored_segment = restored_by_index.get(int(segment.index))
+                            if restored_segment is not None:
+                                segment.content = str(restored_segment.get("content", ""))
                         restored = True
                 except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
                     restored = False
@@ -816,14 +965,38 @@ class VideoPipelineRunner:
             with tempfile.TemporaryDirectory(
                 prefix="tts-batch-", dir=self.work_directory
             ) as work:
-                infos = await generate_tts_audio_v2(
-                    batch,
-                    work,
-                    voice_source=source,
-                    voice_param=self.request.voice_param,
-                    api_key=self.request.api_key,
-                    policy=policy,
-                )
+                async def generate_round(round_number: int):
+                    return await generate_tts_audio_v2(
+                        batch,
+                        Path(work) / "round-{}".format(round_number),
+                        voice_source=source,
+                        voice_param=self.request.voice_param,
+                        api_key=self.request.tts_api_key or self.request.api_key,
+                        policy=policy,
+                        strict_provider=True,
+                    )
+
+                infos = await generate_round(0)
+                if actual_rewriter is not None:
+                    for rewrite_round in range(1, policy.max_rewrite_rounds + 1):
+                        requests = plan_actual_timing_rewrites(batch, infos)
+                        if not requests:
+                            break
+                        replacements = await asyncio.to_thread(
+                            actual_rewriter, requests
+                        )
+                        changed = False
+                        for segment in batch:
+                            replacement = replacements.get(int(segment.index))
+                            if (
+                                replacement
+                                and replacement.strip() != str(segment.content).strip()
+                            ):
+                                segment.content = replacement.strip()
+                                changed = True
+                        if not changed:
+                            break
+                        infos = await generate_round(rewrite_round)
                 batch_records = []
                 batch_infos = []
                 for info in infos:
@@ -837,6 +1010,7 @@ class VideoPipelineRunner:
                         "input_fingerprint": input_fingerprint,
                         "audio_artifacts": [record.to_dict() for record in batch_records],
                         "segments": batch_infos,
+                        "runtime_segments": segments_to_dicts(batch),
                     },
                 )
                 artifacts.extend(batch_records)
@@ -844,10 +1018,30 @@ class VideoPipelineRunner:
                 portable_infos.extend(batch_infos)
         artifacts.append(
             self.artifact_store.put_json(
-                "tts/segments.json", {"segments": portable_infos}
+                "tts/segments.json",
+                {
+                    "segments": portable_infos,
+                    "runtime_segments": segments_to_dicts(segments),
+                    "unresolved_source_ids": sorted(
+                        {
+                            int(info.get("source_segment_id", info["index"]))
+                            for info in portable_infos
+                            if not bool(info.get("timing_fits", False))
+                        }
+                    ),
+                },
             )
         )
         return artifacts
+
+    def _segments_after_tts(
+        self, fallback: Sequence[RuntimeSegment]
+    ) -> List[RuntimeSegment]:
+        payload = self._load_json("tts/segments.json")
+        serialized = payload.get("runtime_segments")
+        if isinstance(serialized, list) and serialized:
+            return segments_from_dicts(serialized)
+        return segments_from_dicts(segments_to_dicts(fallback))
 
     def _audio_infos(self) -> List[Dict[str, Any]]:
         key = (
@@ -879,6 +1073,7 @@ class VideoPipelineRunner:
             checkpoint_key = "rvc/batches/{:05d}.json".format(batch_number)
             input_fingerprint = fingerprint_json(
                 {
+                    "pipeline_implementation_version": PIPELINE_IMPLEMENTATION_VERSION,
                     "tts": batch,
                     "model": self.manifest.fingerprints.model_sha256.get("rvc", ""),
                     "atempo_min": policy.atempo_min,
@@ -965,6 +1160,8 @@ class VideoPipelineRunner:
                             **original_info,
                             "artifact_key": key,
                             "path": None,
+                            "rvc_source_audio_duration": fit.source_duration_seconds,
+                            "target_audio_duration": fit.target_duration_seconds,
                             "actual_audio_duration": fit.output_duration_seconds,
                             "rvc_applied_atempo": fit.applied_atempo,
                             "timing_fits": fit.fits,
@@ -983,7 +1180,17 @@ class VideoPipelineRunner:
                 portable.extend(batch_infos)
         artifacts.append(
             self.artifact_store.put_json(
-                "rvc/segments.json", {"segments": portable}
+                "rvc/segments.json",
+                {
+                    "segments": portable,
+                    "unresolved_source_ids": sorted(
+                        {
+                            int(info.get("source_segment_id", info["index"]))
+                            for info in portable
+                            if not bool(info.get("timing_fits", False))
+                        }
+                    ),
+                },
             )
         )
         return artifacts
@@ -1026,6 +1233,7 @@ class VideoPipelineRunner:
                 output,
                 -2,
                 1,
+                True,
             )
             return [self.artifact_store.put_file("audio/mixed_legacy.wav", output)]
 
@@ -1045,6 +1253,7 @@ class VideoPipelineRunner:
                         self.request.settings.mixer_max_inputs_per_pass
                     ),
                 ),
+                timeout_seconds=self.request.settings.stage_timeout_seconds,
             )
             return [self.artifact_store.put_file("audio/mixed_v2.wav", output)]
 
@@ -1061,15 +1270,16 @@ class VideoPipelineRunner:
             output = Path(work) / "final.mp4"
             ok = await asyncio.to_thread(
                 process_video,
-                self.video_path,
-                self._artifact_path("subtitles/final.ass"),
-                self._selected_mix(),
-                output,
+                str(self.video_path),
+                str(self._artifact_path("subtitles/final.ass")),
+                str(self._selected_mix()),
+                str(output),
                 "Arial",
                 "&H00FFFFFF",
                 1,
                 0.88,
                 self.request.delogo,
+                self._resource_scaled_timeout(),
             )
             if not ok or not output.is_file():
                 raise RuntimeError("Final video render failed")
@@ -1078,8 +1288,37 @@ class VideoPipelineRunner:
     async def _qc_stage(
         self, segments: Sequence[RuntimeSegment]
     ) -> Sequence[ArtifactRecord]:
+        audio_by_index = {
+            int(info["index"]): info for info in self._audio_infos()
+        }
+        qc_segments = []
+        for segment in segments:
+            payload = segment_to_dict(segment)
+            audio_info = audio_by_index.get(int(segment.index), {})
+            if audio_info:
+                payload.update(
+                    {
+                        "audio_path": str(
+                            self._artifact_path(audio_info["artifact_key"])
+                        ),
+                        "actual_audio_duration": audio_info.get(
+                            "actual_audio_duration"
+                        ),
+                        "target_audio_duration": max(
+                            (segment.end - segment.start).total_seconds(), 0.1
+                        ),
+                        "timing_fits": bool(
+                            audio_info.get("timing_fits", False)
+                        ),
+                        "applied_atempo": audio_info.get(
+                            "rvc_applied_atempo",
+                            audio_info.get("applied_atempo"),
+                        ),
+                    }
+                )
+            qc_segments.append(payload)
         segment_artifact = self.artifact_store.put_json(
-            "qc/segments.json", {"segments": segments_to_dicts(segments)}
+            "qc/segments.json", {"segments": qc_segments}
         )
         with tempfile.TemporaryDirectory(prefix="qc-", dir=self.work_directory) as work:
             work_path = Path(work)
@@ -1089,7 +1328,7 @@ class VideoPipelineRunner:
                 run_report_only_qc,
                 self._artifact_path("output/final.mp4"),
                 report_path,
-                self._selected_mix(),
+                self._artifact_path("output/final.mp4"),
                 self._artifact_path("qc/segments.json"),
                 self._artifact_path("subtitles/final.ass"),
                 diagnostics,

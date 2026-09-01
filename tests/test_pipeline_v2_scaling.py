@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from backend.pipeline_v2.batching import bounded_batches, chunked
+from backend.pipeline_v2.artifact_store import hash_file
 from backend.pipeline_v2.manifest import ManifestStore
 from backend.pipeline_v2.mixer import plan_voice_chunks
 from backend.pipeline_v2.models import FingerprintSet
@@ -63,6 +64,42 @@ class StartupResumeDiscoveryTests(unittest.TestCase):
             self.assertEqual(len(jobs), 1)
             self.assertEqual(jobs[0].job_id, "job-1")
             self.assertEqual(jobs[0].next_stage, "input")
+
+    def test_same_size_corrupt_delivery_is_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            source = workspace / "source.mp4"
+            source.write_bytes(b"video")
+            output = workspace / "published.mp4"
+            output.write_bytes(b"good-output")
+            sha256, size = hash_file(output)
+            manifest_directory = workspace / "job-1" / "pipeline_v2"
+            store = ManifestStore(manifest_directory)
+            manifest = store.create(
+                "job-1",
+                FingerprintSet("source", "config", {}),
+                stage_names=V2_STAGE_ORDER,
+                metadata={
+                    "source_path": str(source),
+                    "request": {"output_path": str(output)},
+                },
+            )
+            manifest.start_stage("deliver")
+            manifest.stage("deliver").metadata["published_outputs"] = [
+                {
+                    "path": str(output),
+                    "size_bytes": size,
+                    "sha256": sha256,
+                }
+            ]
+            manifest.complete_stage("deliver")
+            store.save(manifest)
+            self.assertEqual(find_resumable_jobs(workspace), [])
+
+            output.write_bytes(b"evil-output")
+            self.assertEqual(output.stat().st_size, size)
+            jobs = find_resumable_jobs(workspace)
+            self.assertEqual(len(jobs), 1)
 
 
 if __name__ == "__main__":
