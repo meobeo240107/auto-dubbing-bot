@@ -567,12 +567,7 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # (Di chuyển BƯỚC 4.5 xuống sau BƯỚC 5 để đồng bộ thời gian biến mất của phụ đề với audio)
 
         # ===== BƯỚC 5: LỒNG TIẾNG =====
-        await safe_edit_status(
-            status_msg,
-            "🗣️ *Bước 5/6:* Đang lồng tiếng AI (Giọng Hoài My)...",
-            parse_mode="Markdown"
-        )
-        # Khôi phục giọng RVC (Đáng yêu)
+        # Khôi phục giọng RVC (Đáng yêu / Chí Mai)
         rvc_model_path = None
         search_dirs = [
             os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
@@ -596,6 +591,12 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 break
                     
         v_source = "rvc" if rvc_model_path else "edge"
+        v_label = "Giọng Chí Mai (RVC)" if v_source == "rvc" else "Giọng Hoài My"
+        await safe_edit_status(
+            status_msg,
+            f"🗣️ *Bước 5/6:* Đang lồng tiếng AI ({v_label})...",
+            parse_mode="Markdown"
+        )
         if rvc_model_path:
             v_param = rvc_model_path
         else:
@@ -931,9 +932,8 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         await asyncio.to_thread(save_srt, translated_segments, srt_translated)
 
         # ===== BƯỚC 5: LỒNG TIẾNG =====
-        await safe_edit_status(status_msg, "🗣️ Đang lồng tiếng AI (Giọng Hoài My)...")
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
-        # Khôi phục giọng RVC (Đáng yêu)
+        # Khôi phục giọng RVC (Đáng yêu / Chí Mai)
         rvc_model_path = None
         search_dirs = [
             os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
@@ -957,6 +957,8 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
                 break
                     
         v_source = "rvc" if rvc_model_path else "edge"
+        v_label = "Giọng Chí Mai (RVC)" if v_source == "rvc" else "Giọng Hoài My"
+        await safe_edit_status(status_msg, f"🗣️ Đang lồng tiếng AI ({v_label})...")
         if rvc_model_path:
             v_param = rvc_model_path
         else:

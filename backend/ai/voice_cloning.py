@@ -86,33 +86,60 @@ async def apply_rvc_clone(input_audio, output_audio, model_path):
     async with rvc_semaphore:
         print(f"Applying RVC model from {model_path} to {input_audio}...")
         import traceback
-        try:
-            def run_rvc():
-                global global_rvc_instance, global_rvc_model_path
-                import torch
-                from rvc_python.infer import RVCInference
-                if global_rvc_instance is None:
-                    global_rvc_instance = RVCInference(device="cuda:0" if torch.cuda.is_available() else "cpu")
-                
-                if global_rvc_model_path != model_path:
-                    print("=> Nap model RVC vao VRAM (Chi chay 1 lan duy nhat)...")
-                    index_path = model_path.replace(".pth", ".index")
-                    if os.path.exists(index_path):
-                        global_rvc_instance.load_model(model_path, version="v2", index_path=index_path)
-                    else:
-                        global_rvc_instance.load_model(model_path, version="v2")
-                    global_rvc_model_path = model_path
-                global_rvc_instance.set_params(f0up_key=0, f0method="rmvpe", index_rate=0.6, protect=0.1, filter_radius=3, rms_mix_rate=0.25)
-                global_rvc_instance.infer_file(input_audio, output_audio)
-                
-            await asyncio.to_thread(run_rvc)
-            print(f"=> RVC Cloning Successful cho file {output_audio}")
+        
+        def run_rvc_with_method(method="rmvpe"):
+            global global_rvc_instance, global_rvc_model_path
+            import torch
+            from rvc_python.infer import RVCInference
+            if global_rvc_instance is None:
+                global_rvc_instance = RVCInference(device="cuda:0" if torch.cuda.is_available() else "cpu")
             
+            if global_rvc_model_path != model_path:
+                print("=> Nap model RVC vao VRAM (Chi chay 1 lan duy nhat)...")
+                index_path = model_path.replace(".pth", ".index")
+                if os.path.exists(index_path):
+                    global_rvc_instance.load_model(model_path, version="v2", index_path=index_path)
+                else:
+                    global_rvc_instance.load_model(model_path, version="v2")
+                global_rvc_model_path = model_path
+            global_rvc_instance.set_params(f0up_key=0, f0method=method, index_rate=0.6, protect=0.1, filter_radius=3, rms_mix_rate=0.25)
+            global_rvc_instance.infer_file(input_audio, output_audio)
+
+        success = False
+        # Thử lần 1 bằng rmvpe
+        try:
+            await asyncio.to_thread(run_rvc_with_method, "rmvpe")
+            if os.path.exists(output_audio) and os.path.getsize(output_audio) > 100:
+                success = True
         except Exception as e:
-            print(f"=> Loi khi chay RVC: {e}")
-            traceback.print_exc()
+            print(f"=> Lỗi RVC (rmvpe): {e}. Đang thử lại với phương pháp pm (Parselmouth)...")
+
+        # Thử lần 2 bằng pm nếu rmvpe bị lỗi (âm thanh quá ngắn hoặc không bắt được cao độ)
+        if not success:
+            try:
+                await asyncio.to_thread(run_rvc_with_method, "pm")
+                if os.path.exists(output_audio) and os.path.getsize(output_audio) > 100:
+                    success = True
+                    print(f"=> RVC Cloning (pm) thành công!")
+            except Exception as e:
+                print(f"=> Lỗi RVC (pm): {e}")
+
+        # Thử lần 3 bằng harvest
+        if not success:
+            try:
+                await asyncio.to_thread(run_rvc_with_method, "harvest")
+                if os.path.exists(output_audio) and os.path.getsize(output_audio) > 100:
+                    success = True
+                    print(f"=> RVC Cloning (harvest) thành công!")
+            except Exception as e:
+                print(f"=> Lỗi RVC (harvest): {e}")
+
+        if not success:
+            print(f"⚠️ CẢNH BÁO: RVC thất bại cả 3 phương pháp. Giữ file gốc.")
             import shutil
             shutil.copy(input_audio, output_audio)
+        else:
+            print(f"=> RVC Cloning Successful cho file {output_audio}")
 
 async def generate_single_tts(segment, output_folder, voice_source, voice_param, api_key):
     import shared_state
