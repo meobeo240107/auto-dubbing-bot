@@ -624,7 +624,7 @@ class VideoPipelineRunner:
 
         with tempfile.TemporaryDirectory(prefix="extract-", dir=self.work_directory) as work:
             output = Path(work) / "original.wav"
-            ok = await asyncio.to_thread(extract_audio_from_video, self.video_path, output)
+            ok = await asyncio.to_thread(extract_audio_from_video, str(self.video_path), str(output))
             if not ok or not output.is_file():
                 raise RuntimeError("Could not extract source audio")
             return [self.artifact_store.put_file("audio/original.wav", output)]
@@ -638,7 +638,7 @@ class VideoPipelineRunner:
                     "demucs",
                     {
                         "input_audio": str(original),
-                        "output_directory": work,
+                        "output_directory": str(work),
                         "segment_seconds": 6,
                         "timeout_seconds": self._resource_scaled_timeout(),
                     },
@@ -652,8 +652,8 @@ class VideoPipelineRunner:
 
                 vocals_value, background_value = await asyncio.to_thread(
                     separate_vocals_demucs,
-                    original,
-                    work,
+                    str(original),
+                    str(work),
                     6,
                     self._resource_scaled_timeout(),
                 )
@@ -699,7 +699,7 @@ class VideoPipelineRunner:
                 from ai.transcription import extract_subtitles_whisper
 
                 segments = await asyncio.to_thread(
-                    extract_subtitles_whisper, speech, srt_path, 1
+                    extract_subtitles_whisper, str(speech), str(srt_path), 1
                 )
                 segment_payload = segments_to_dicts(segments)
             if not segment_payload:
@@ -739,7 +739,7 @@ class VideoPipelineRunner:
                 ):
                     _blocks, width, height, main_y_pct = await asyncio.to_thread(
                         perform_video_ocr,
-                        self.video_path,
+                        str(self.video_path),
                         self.request.target_lang,
                         1.0,
                         None,
@@ -1213,7 +1213,7 @@ class VideoPipelineRunner:
                 generate_ass_file,
                 segments,
                 [],
-                output,
+                str(output),
                 width,
                 height,
                 main_y,
@@ -1228,9 +1228,9 @@ class VideoPipelineRunner:
             output = Path(work) / "mixed_legacy.wav"
             await asyncio.to_thread(
                 mix_audio_pydub,
-                self._background_audio(),
+                str(self._background_audio()),
                 self._audio_infos(),
-                output,
+                str(output),
                 -2,
                 1,
                 True,
