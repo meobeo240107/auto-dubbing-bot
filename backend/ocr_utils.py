@@ -137,8 +137,14 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
                 y_dist = abs((mb['y_pct'] + mb['max_y_pct'])/2 - (fb['y_pct'] + fb['max_y_pct'])/2)
                 horizontal_overlap = not (mb['max_x_pct'] < fb['x_pct'] or fb['max_x_pct'] < mb['x_pct'])
                 
-                # Giảm khoảng cách Y cho phép merge (0.035) để không bị nuốt nhầm hoa văn phía dưới
-                if y_dist < 0.035 and horizontal_overlap:
+                # Không gộp nếu 1 bên là tiếng Trung và 1 bên là tiếng Anh ở khác dòng
+                mb_has_zh = any('\u4e00' <= c <= '\u9fff' for c in mb['text'])
+                fb_has_zh = any('\u4e00' <= c <= '\u9fff' for c in fb['text'])
+                if mb_has_zh != fb_has_zh and y_dist > 0.015:
+                    continue
+
+                # Giảm khoảng cách Y cho phép merge (0.025) để không nuốt nhầm dòng phụ đề tiếng Anh bên dưới
+                if y_dist < 0.025 and horizontal_overlap:
                     mb['text'] += " " + fb['text']
                     mb['x_pct'] = min(mb['x_pct'], fb['x_pct'])
                     mb['max_x_pct'] = max(mb['max_x_pct'], fb['max_x_pct'])
@@ -155,20 +161,17 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
                 
     cap.release()
     
-    # Lọc các khối thực sự là phụ đề thoại (có ít nhất 2 chữ Hán hoặc câu dài >= 4 ký tự với độ rộng >= 12%)
-    def is_likely_subtitle(b):
-        zh_count = sum(1 for c in b.text if '\u4e00' <= c <= '\u9fff')
-        clean_len = len(re.sub(r'[^\w\u4e00-\u9fff]', '', b.text))
-        width_span = b.max_x_pct - b.x_pct
-        if zh_count >= 2:
-            return True
-        if clean_len >= 4 and width_span >= 0.12:
-            return True
-        return False
+    # Hàm đếm số lượng chữ Hán
+    def count_chinese(text):
+        return sum(1 for c in str(text) if '\u4e00' <= c <= '\u9fff')
 
-    valid_subtitle_blocks = [b for b in all_blocks if is_likely_subtitle(b)]
-    if not valid_subtitle_blocks:
-        valid_subtitle_blocks = [b for b in all_blocks if len(re.sub(r'[^\w]', '', b.text)) >= 2]
+    # Ưu tiên lọc 100% khối chữ Hán (tiếng Trung) để không bị che nhầm hoặc nhảy dòng theo tiếng Anh
+    chinese_blocks = [b for b in all_blocks if count_chinese(b.text) >= 1]
+    
+    if len(chinese_blocks) >= 2:
+        valid_subtitle_blocks = chinese_blocks
+    else:
+        valid_subtitle_blocks = [b for b in all_blocks if len(re.sub(r'[^\w\u4e00-\u9fff]', '', b.text)) >= 2]
     
     matched_spoken_tops = []
     matched_spoken_bottoms = []
@@ -192,6 +195,10 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
                         p_sim = difflib.SequenceMatcher(None, part, seg_text).ratio()
                         if p_sim > sim: sim = p_sim
                     
+                    # Ưu tiên tối đa khối chữ Hán
+                    if count_chinese(b.text) >= 1:
+                        sim *= 1.5
+                    
                     if sim >= 0.1 and 0.05 <= b.y_pct <= 0.95:
                         matched_blocks.append(b)
                         
@@ -208,7 +215,6 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
                 seg.y_pct = min(y_pcts) if y_pcts else best_block.y_pct
                 seg.max_y_pct = max(max_y_pcts) if max_y_pcts else best_block.max_y_pct
                 
-                # Tao block m?i d? trnh mutate block g?c (h? tr? text di chuy?n, bounding box to ra)
                 union_block = OCRBlock(
                     text=best_block.text, start=best_block.start, end=best_block.end,
                     x_pct=min(x_pcts) if x_pcts else best_block.x_pct,
@@ -227,11 +233,13 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
                 for b in valid_subtitle_blocks:
                     if b.start <= seg_end + 0.2 and b.end >= seg_start - 0.2 and 0.05 <= b.y_pct <= 0.95:
                         w = b.max_x_pct - b.x_pct
+                        if count_chinese(b.text) >= 1:
+                            w *= 1.5
                         if w > max_w:
                             max_w = w
                             widest_block = b
                 
-                if widest_block and max_w >= 0.12:
+                if widest_block and max_w >= 0.10:
                     seg.y_pct = widest_block.y_pct
                     seg.max_y_pct = widest_block.max_y_pct
                     seg.best_block = widest_block
@@ -241,7 +249,7 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
                 else:
                     seg.best_block = None
 
-    # === TÍNH TOÁN BĂNG DẢI PHỤ ĐỀ TOÀN CỤC TỪ CÁC CÂU ĐÃ KHỚP ===
+    # === TÍNH TOÁN BĂNG DẢI PHỤ ĐỀ TOÀN CỤC TỪ CÁC CÂU ĐÃ KHỚP CHỮ TRUNG ===
     if matched_spoken_tops:
         import numpy as np
         global_med_top = float(np.median(matched_spoken_tops))
@@ -260,12 +268,20 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
     main_y_pct = global_med_top
     logger.info(f"🎯 Global Subtitle Band detected: Top={global_med_top:.3f}, Bottom={global_med_bottom:.3f}")
     
-    # Gán fallback cho các segment chưa khớp
+    # Khóa và ổn định dải phụ đề: Ghim chặt vị trí để phụ đề tiếng Việt đứng yên, không nhảy lên xuống
     if srt_segments:
         for seg in srt_segments:
             if not getattr(seg, 'best_block', None):
                 seg.y_pct = global_med_top
                 seg.max_y_pct = global_med_bottom
                 logger.info(f"Sync (Global Band Fallback): '{seg.content[:15]}' -> Y: {global_med_top:.3f} - {global_med_bottom:.3f}")
+            elif hasattr(seg, 'y_pct') and abs(seg.y_pct - global_med_top) > 0.035:
+                # Nếu câu nào bị lệch quá 3.5% so với dòng chữ Trung (do dính chữ tiếng Anh), ghim về dòng chuẩn
+                logger.info(f"Ổn định vị trí: Ghim Y từ {seg.y_pct:.3f} về dải chữ Trung chuẩn {global_med_top:.3f}")
+                seg.y_pct = global_med_top
+                seg.max_y_pct = global_med_bottom
+                if hasattr(seg, 'best_block') and seg.best_block:
+                    seg.best_block.y_pct = global_med_top
+                    seg.best_block.max_y_pct = global_med_bottom
 
     return [], width, height, main_y_pct
