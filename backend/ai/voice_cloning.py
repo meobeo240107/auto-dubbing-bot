@@ -1,10 +1,12 @@
 import os
 import asyncio
 import re
+import threading
 import edge_tts
 from pydub import AudioSegment
 
-edge_semaphore = asyncio.Semaphore(3)
+edge_semaphore = asyncio.Semaphore(2)
+capcut_semaphore = threading.Semaphore(2)
 rvc_semaphore = asyncio.Semaphore(1)
 global_rvc_instance = None
 global_rvc_model_path = None
@@ -36,12 +38,53 @@ def discover_rvc_index(model_path):
 
 class FPTQuotaError(Exception): pass
 
-async def generate_tts_edge(text, output_path, voice="vi-VN-HoaiMyNeural", rate="+0%", pitch="+0Hz"):
+async def generate_tts_edge(
+    text,
+    output_path,
+    voice="vi-VN-HoaiMyNeural",
+    rate="+0%",
+    pitch="+0Hz",
+    attempts=4,
+    retry_delays=(2.0, 5.0, 10.0),
+):
     async with edge_semaphore:
-        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
-        await asyncio.wait_for(communicate.save(output_path), timeout=25.0)
+        last_error = None
+        for attempt in range(max(1, int(attempts))):
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                communicate = edge_tts.Communicate(
+                    text, voice, rate=rate, pitch=pitch
+                )
+                await asyncio.wait_for(communicate.save(output_path), timeout=35.0)
+                if not os.path.isfile(output_path) or os.path.getsize(output_path) < 128:
+                    raise RuntimeError("Edge TTS returned empty audio")
+                return
+            except Exception as exc:
+                last_error = exc
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                except OSError:
+                    pass
+                if attempt + 1 >= max(1, int(attempts)):
+                    break
+                delay = (
+                    retry_delays[min(attempt, len(retry_delays) - 1)]
+                    if retry_delays
+                    else 0.0
+                )
+                print(
+                    "Edge TTS retry {}/{} after {}: {}".format(
+                        attempt + 2, attempts, type(exc).__name__, exc
+                    )
+                )
+                await asyncio.sleep(max(0.0, float(delay)))
+        raise RuntimeError("Edge TTS failed after {} attempts".format(attempts)) from last_error
 
-def _run_capcut_tts(text, output_path, voice="BV562_streaming"):
+def _run_capcut_tts_once(
+    text, output_path, voice="BV562_streaming", poll_interval=3.0
+):
     import json, requests, time
     from capcut_tts_api import CapCutClient
     client = CapCutClient()
@@ -51,13 +94,16 @@ def _run_capcut_tts(text, output_path, voice="BV562_streaming"):
     token = res["data"]["tasks"][0]["token"]
     
     for _ in range(60):
-        time.sleep(3)
+        time.sleep(max(0.0, float(poll_interval)))
         query_res = client.query_tts_task(task_id, token)
         status = query_res["data"]["tasks"][0]["status"]
         if status in ("success", "succeed"):
             payload = json.loads(query_res["data"]["tasks"][0]["payload"])
             speech_url = payload["audio_subtitles"][0]["speech_url"]
-            r = requests.get(speech_url)
+            r = requests.get(speech_url, timeout=30)
+            r.raise_for_status()
+            if len(r.content) < 128:
+                raise RuntimeError("CapCut TTS returned empty audio")
             with open(output_path, "wb") as f:
                 f.write(r.content)
             return True
@@ -65,6 +111,51 @@ def _run_capcut_tts(text, output_path, voice="BV562_streaming"):
             raise Exception("CapCut TTS task failed")
             
     raise Exception("CapCut TTS timeout after 60s")
+
+
+def _run_capcut_tts(
+    text,
+    output_path,
+    voice="BV562_streaming",
+    attempts=3,
+    retry_delays=(2.0, 5.0),
+    poll_interval=3.0,
+):
+    import time
+
+    last_error = None
+    with capcut_semaphore:
+        for attempt in range(max(1, int(attempts))):
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                return _run_capcut_tts_once(
+                    text,
+                    output_path,
+                    voice=voice,
+                    poll_interval=poll_interval,
+                )
+            except Exception as exc:
+                last_error = exc
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                except OSError:
+                    pass
+                if attempt + 1 >= max(1, int(attempts)):
+                    break
+                delay = (
+                    retry_delays[min(attempt, len(retry_delays) - 1)]
+                    if retry_delays
+                    else 0.0
+                )
+                print(
+                    "CapCut TTS retry {}/{} after {}: {}".format(
+                        attempt + 2, attempts, type(exc).__name__, exc
+                    )
+                )
+                time.sleep(max(0.0, float(delay)))
+    raise RuntimeError("CapCut TTS failed after {} attempts".format(attempts)) from last_error
 
 async def generate_tts_fpt(text, output_path, api_key, voice="banmai", speed="0"):
     import httpx
