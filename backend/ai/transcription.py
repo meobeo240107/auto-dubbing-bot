@@ -12,6 +12,93 @@ import srt
 from datetime import timedelta
 from faster_whisper import WhisperModel
 
+
+def _word_aligned_bounds(segment):
+    """Return the audible speech bounds instead of Whisper's coarse chunk bounds."""
+
+    valid_words = []
+    for word in getattr(segment, "words", None) or []:
+        start = getattr(word, "start", None)
+        end = getattr(word, "end", None)
+        if start is None or end is None:
+            continue
+        start = float(start)
+        end = float(end)
+        if start >= 0 and end > start:
+            valid_words.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": str(getattr(word, "word", "") or ""),
+                    "probability": float(
+                        getattr(word, "probability", 0.0) or 0.0
+                    ),
+                }
+            )
+    if valid_words:
+        clusters = [[valid_words[0]]]
+        for word in valid_words[1:]:
+            if word["start"] - clusters[-1][-1]["end"] > 1.25:
+                clusters.append([word])
+            else:
+                clusters[-1].append(word)
+
+        # Whisper occasionally attaches the first token of a sentence to the
+        # previous speech window, then leaves several seconds of silence before
+        # the remaining words. Keep the dominant contiguous word cluster while
+        # retaining the complete recognized text for translation.
+        best_cluster = max(
+            clusters,
+            key=lambda cluster: (
+                sum(
+                    1
+                    for word in cluster
+                    for character in word["text"]
+                    if not character.isspace()
+                ),
+                len(cluster),
+                sum(word["probability"] for word in cluster),
+                cluster[-1]["end"],
+            ),
+        )
+        start = best_cluster[0]["start"]
+        end = best_cluster[-1]["end"]
+        if len(clusters) > 1:
+            recognized_characters = sum(
+                1
+                for character in str(getattr(segment, "text", "") or "")
+                if not character.isspace()
+            )
+            minimum_window = min(1.2, max(0.65, recognized_characters * 0.16))
+            start = max(0.0, min(start, end - minimum_window))
+        return start, end
+    return float(segment.start), float(segment.end)
+
+
+def _merge_short_fragments(segments):
+    """Merge only tiny ASR fragments, never full adjacent subtitle lines."""
+
+    merged = []
+    current = None
+    for item in segments:
+        if current is None:
+            current = dict(item)
+            continue
+        gap = float(item["start"]) - float(current["end"])
+        current_duration = float(current["end"]) - float(current["start"])
+        item_duration = float(item["end"]) - float(item["start"])
+        combined_duration = float(item["end"]) - float(current["start"])
+        is_tiny_fragment = current_duration <= 0.65 or item_duration <= 0.65
+        if -0.05 <= gap <= 0.12 and combined_duration <= 1.25 and is_tiny_fragment:
+            current["end"] = item["end"]
+            current["text"] += " " + item["text"]
+        else:
+            merged.append(current)
+            current = dict(item)
+    if current is not None:
+        merged.append(current)
+    return merged
+
 def extract_subtitles_whisper(audio_path, output_srt_path, num_workers=2):
     print(f"Transcribing {audio_path} with Faster-Whisper Large-v3...")
     import torch, gc
@@ -37,40 +124,21 @@ def extract_subtitles_whisper(audio_path, output_srt_path, num_workers=2):
             vad_filter=True, 
             vad_parameters=dict(min_silence_duration_ms=600, threshold=0.4),
             condition_on_previous_text=False,
-            temperature=[0.0, 0.2, 0.4]
+            temperature=[0.0, 0.2, 0.4],
+            # Coarse segment timestamps can span the entire silence before the
+            # next speaker. Word timestamps provide the actual audible window.
+            word_timestamps=True,
         )
         
-        merged_segments = []
-        current_segment = None
-        
+        transcribed_segments = []
         for segment in segments:
             text = segment.text.strip()
             if not text:
                 continue
-                
-            if current_segment is None:
-                current_segment = {
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": text
-                }
-            else:
-                gap = segment.start - current_segment["end"]
-                duration = segment.end - current_segment["start"]
-                
-                if gap < 0.5 and duration < 3.0:
-                    current_segment["end"] = segment.end
-                    current_segment["text"] += " " + text
-                else:
-                    merged_segments.append(current_segment)
-                    current_segment = {
-                        "start": segment.start,
-                        "end": segment.end,
-                        "text": text
-                    }
-                    
-        if current_segment is not None:
-            merged_segments.append(current_segment)
+            start, end = _word_aligned_bounds(segment)
+            transcribed_segments.append({"start": start, "end": end, "text": text})
+
+        merged_segments = _merge_short_fragments(transcribed_segments)
         
         srt_segments = []
         for i, seg in enumerate(merged_segments, start=1):

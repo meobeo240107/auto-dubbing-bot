@@ -55,7 +55,7 @@ class PipelineSettings:
     enable_adaptive_ocr: bool = False
     preserve_source_resolution: bool = True
     enable_gpu_process_isolation: bool = True
-    enable_timing_solver: bool = False
+    enable_timing_solver: bool = True
     enable_ffmpeg_mix_v2: bool = False
     enable_legacy_mix_ab: bool = False
     enable_rvc: bool = True
@@ -131,7 +131,7 @@ class PipelineSettings:
             enable_gpu_process_isolation=_env_bool(
                 env, "ENABLE_GPU_PROCESS_ISOLATION", True
             ),
-            enable_timing_solver=_env_bool(env, "ENABLE_TIMING_SOLVER", False),
+            enable_timing_solver=_env_bool(env, "ENABLE_TIMING_SOLVER", True),
             enable_ffmpeg_mix_v2=_env_bool(env, "ENABLE_FFMPEG_MIX_V2", False),
             enable_legacy_mix_ab=_env_bool(env, "ENABLE_LEGACY_MIX_AB", False),
             enable_rvc=_env_bool(env, "ENABLE_RVC", True),

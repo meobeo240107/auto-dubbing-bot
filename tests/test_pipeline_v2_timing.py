@@ -15,6 +15,11 @@ from backend.pipeline_v2.timing import (
 
 
 class TimingSolverTests(unittest.TestCase):
+    def test_default_policy_matches_production_speed_envelope(self):
+        policy = TimingPolicy()
+        self.assertEqual(policy.atempo_min, 0.92)
+        self.assertEqual(policy.atempo_max, 1.40)
+
     def test_budgeted_rewrite_runs_before_tts(self):
         segment = RuntimeSegment(
             index=1,

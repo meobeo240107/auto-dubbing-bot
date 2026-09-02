@@ -19,6 +19,7 @@ class PipelineSettingsTests(unittest.TestCase):
         self.assertEqual(settings.mode, PipelineMode.V2)
         self.assertFalse(settings.enable_stage_cache)
         self.assertTrue(settings.preserve_source_resolution)
+        self.assertTrue(settings.enable_timing_solver)
 
     def test_rejects_unsafe_atempo_bounds(self):
         with self.assertRaises(ValueError):

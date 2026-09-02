@@ -123,12 +123,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 
                 b = event['block']
                 if b:
-                    seg_y_pct = getattr(b, 'y_pct', main_y_pct)
-                    seg_max_y_pct = getattr(b, 'max_y_pct', seg_y_pct)
+                    raw_y_pct = getattr(b, 'y_pct', None)
+                    seg_y_pct = main_y_pct if raw_y_pct is None else raw_y_pct
+                    raw_max_y_pct = getattr(b, 'max_y_pct', None)
+                    seg_max_y_pct = seg_y_pct if raw_max_y_pct is None else raw_max_y_pct
                     chinese_w = int((getattr(b, 'max_x_pct', 0) - getattr(b, 'x_pct', 0)) * play_res_x)
                 else:
-                    seg_y_pct = getattr(seg, 'y_pct', main_y_pct)
-                    seg_max_y_pct = getattr(seg, 'max_y_pct', seg_y_pct)
+                    raw_y_pct = getattr(seg, 'y_pct', None)
+                    seg_y_pct = main_y_pct if raw_y_pct is None else raw_y_pct
+                    raw_max_y_pct = getattr(seg, 'max_y_pct', None)
+                    seg_max_y_pct = seg_y_pct if raw_max_y_pct is None else raw_max_y_pct
                     chinese_w = 0
                 
                 # 1. Xác định độ rộng wrap chữ Việt

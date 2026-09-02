@@ -30,11 +30,13 @@ async def process_video(video_path: Path):
     file_name = video_path.name
     base_name = video_path.stem
     
-    workspace_dir = Path(r"C:\Users\admin\.gemini\antigravity\scratch\video-dubbing-app\workspace")
+    workspace_dir = Path(
+        os.getenv("AUTODUB_WORKSPACE", str(Path(BASE_DIR).parent / "workspace"))
+    ).resolve()
     job_dir = workspace_dir / f"batch_{base_name}"
     job_dir.mkdir(parents=True, exist_ok=True)
     
-    output_dir = Path(r"D:\banve")
+    output_dir = Path(os.getenv("AUTODUB_OUTPUT_DIR", r"D:\banve")).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     final_dest = output_dir / f"Dubbed_{base_name}.mp4"
     
@@ -70,7 +72,7 @@ async def process_video(video_path: Path):
     print(f"💾 Đã lưu thành phẩm vào: {final_dest}\n", flush=True)
 
 async def main():
-    input_folder = Path(r"D:\video phôi")
+    input_folder = Path(os.getenv("AUTODUB_INPUT_DIR", r"D:\video phôi")).resolve()
     if not input_folder.exists():
         print(f"ERROR: Thư mục {input_folder} không tồn tại!", flush=True)
         return

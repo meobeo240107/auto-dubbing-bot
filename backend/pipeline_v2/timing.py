@@ -25,8 +25,8 @@ def _creation_flags() -> int:
 
 @dataclass(frozen=True)
 class TimingPolicy:
-    atempo_min: float = 0.75
-    atempo_max: float = 1.45
+    atempo_min: float = 0.92
+    atempo_max: float = 1.40
     estimated_chars_per_second: float = 11.5
     min_segment_seconds: float = 0.35
     max_rewrite_rounds: int = 2
