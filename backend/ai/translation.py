@@ -19,6 +19,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _contains_cjk(text):
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
 def build_translation_prompt(texts, target_lang="vi", prior_context=None, with_vision=True):
     lang_name = "Tiếng Việt" if target_lang == "vi" else target_lang
     prompt = f"""Bạn là một chuyên gia dịch thuật nội dung mạng xã hội (Tiktok, Douyin).
@@ -365,7 +369,28 @@ def translate_subtitles(
                 logger.warning(f"Lỗi G4F: {e}")
                 translated_texts = None
         
-    if translated_texts:
+    translated_texts_valid = bool(
+        translated_texts
+        and len(translated_texts) == len(texts)
+        and all(isinstance(item, str) and item.strip() for item in translated_texts)
+    )
+    if translated_texts_valid:
+        unchanged_cjk = [
+            position
+            for position, (source, translated) in enumerate(
+                zip(texts, translated_texts), 1
+            )
+            if _contains_cjk(source)
+            and str(source).strip() == str(translated).strip()
+        ]
+        if unchanged_cjk:
+            logger.warning(
+                "AI translation left CJK source unchanged at positions: %s",
+                ", ".join(str(position) for position in unchanged_cjk),
+            )
+            translated_texts_valid = False
+
+    if translated_texts_valid:
         idx = 0
         for segment in srt_segments:
             if not segment.content:
@@ -377,6 +402,7 @@ def translate_subtitles(
         return srt_segments
     
     logger.info("Falling back to Google Translate...")
+    failed_segments = []
     for segment in srt_segments:
         if not segment.content:
             continue
@@ -386,18 +412,37 @@ def translate_subtitles(
             translator = GoogleTranslator(source='auto', target=target_lang)
             translated_text = translator.translate(segment.content)
             
-            if translated_text == segment.content and any('\u4e00' <= c <= '\u9fff' for c in segment.content):
+            if translated_text == segment.content and _contains_cjk(segment.content):
                 zh_translator = GoogleTranslator(source='zh-CN', target=target_lang)
                 translated_text = zh_translator.translate(segment.content)
-            
-            if "Error 500" in translated_text or "Server Error" in translated_text or translated_text.startswith("Error"):
-                logger.warning(f"Google Translate trả về lỗi rác: {translated_text}")
-                translated_text = segment.content
+
+            if not isinstance(translated_text, str) or not translated_text.strip():
+                raise RuntimeError("Google Translate returned an empty result")
+            if (
+                "Error 500" in translated_text
+                or "Server Error" in translated_text
+                or translated_text.startswith("Error")
+            ):
+                raise RuntimeError(
+                    "Google Translate returned an error payload: {}".format(
+                        translated_text[:120]
+                    )
+                )
+            if translated_text == segment.content and _contains_cjk(segment.content):
+                raise RuntimeError("Chinese source text remained untranslated")
                 
         except Exception as e:
             logger.warning(f"Lỗi dịch thuật: {e}")
+            failed_segments.append(int(getattr(segment, "index", 0)))
             translated_text = segment.content
             
         segment.content = translated_text
         
+    if strict and failed_segments:
+        raise RuntimeError(
+            "Translation failed for segment indexes: {}".format(
+                ", ".join(str(index) for index in failed_segments)
+            )
+        )
+
     return srt_segments

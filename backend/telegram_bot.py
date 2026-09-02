@@ -37,9 +37,16 @@ if os.path.exists(env_file):
                 os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
 # ===== CẤU HÌNH =====
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-FPT_API_KEY = os.getenv("FPT_API_KEY", "YOUR_FPT_API_KEY")
+def configured_secret(name):
+    value = os.getenv(name, "").strip()
+    if value.upper().startswith(("YOUR_", "PASTE_")):
+        return ""
+    return value
+
+
+BOT_TOKEN = configured_secret("BOT_TOKEN")
+GEMINI_API_KEY = configured_secret("GEMINI_API_KEY")
+FPT_API_KEY = configured_secret("FPT_API_KEY")
 
 # Import các module xử lý từ backend
 sys.path.insert(0, os.path.dirname(__file__))
@@ -54,9 +61,17 @@ if isinstance(sys.stderr, io.TextIOWrapper):
 from ai.transcription import extract_subtitles_whisper, save_srt
 from ai.translation import translate_subtitles
 from ai.voice_cloning import generate_dubbing_audio
+from url_utils import extract_http_urls
 from video_utils import extract_audio_from_video, mix_audio_pydub, process_video
 
-WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
+WORKSPACE = os.path.abspath(
+    os.getenv(
+        "AUTODUB_WORKSPACE",
+        os.path.join(os.path.dirname(__file__), "..", "workspace"),
+    )
+)
+INPUT_DIR = os.path.abspath(os.getenv("AUTODUB_INPUT_DIR", r"D:\video_input"))
+OUTPUT_DIR = os.path.abspath(os.getenv("AUTODUB_OUTPUT_DIR", r"D:\banve"))
 os.makedirs(WORKSPACE, exist_ok=True)
 
 logging.basicConfig(
@@ -789,17 +804,8 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # Tìm TẤT CẢ các URL trong tin nhắn bằng Regex (Hỗ trợ text chia sẻ từ điện thoại có chứa tiếng Trung/dấu phẩy liền kề)
-    urls = re.findall(r'(https?://[a-zA-Z0-9\-\.\/\?\:\#\=\&\%\_\~\+]+)', text)
-
-    # Loại bỏ các link trùng lặp trong cùng 1 tin nhắn
-    seen = set()
-    unique_urls = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            unique_urls.append(u)
-    urls = unique_urls
+    # Hỗ trợ nhiều URL, loại trùng và bỏ timestamp dính vào link khi copy chat.
+    urls = extract_http_urls(text)
 
     if not urls:
         await update.message.reply_text(
@@ -1170,7 +1176,7 @@ def main():
         logger.warning("Bot instance already running. Exiting duplicate process.")
         sys.exit(0)
 
-    if BOT_TOKEN == "PASTE_YOUR_TOKEN_HERE":
+    if not BOT_TOKEN:
         print("=" * 60)
         print("❌ LỖI: Chưa cấu hình Bot Token!")
         print("Mở file telegram_bot.py và dán Token vào dòng BOT_TOKEN")

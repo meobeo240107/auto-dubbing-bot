@@ -9,6 +9,31 @@ rvc_semaphore = asyncio.Semaphore(1)
 global_rvc_instance = None
 global_rvc_model_path = None
 
+
+def discover_rvc_index(model_path):
+    """Find a real RVC feature index, including training-prefixed names."""
+    from pathlib import Path
+
+    model = Path(model_path)
+    exact = model.with_suffix(".index")
+    if exact.is_file() and exact.stat().st_size > 1024:
+        return str(exact)
+    matches = [
+        candidate
+        for candidate in model.parent.glob("*.index")
+        if model.stem.lower() in candidate.stem.lower()
+        and candidate.stat().st_size > 1024
+    ]
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda candidate: (
+            0 if candidate.name.lower().startswith("added_") else 1,
+            candidate.name.lower(),
+        )
+    )
+    return str(matches[0])
+
 class FPTQuotaError(Exception): pass
 
 async def generate_tts_edge(text, output_path, voice="vi-VN-HoaiMyNeural", rate="+0%", pitch="+0Hz"):
@@ -82,10 +107,23 @@ async def generate_tts_fpt(text, output_path, api_key, voice="banmai", speed="0"
 
 rvc_semaphore = asyncio.Semaphore(1)
 
-async def apply_rvc_clone(input_audio, output_audio, model_path, strict=False, **kwargs):
+async def apply_rvc_clone(
+    input_audio,
+    output_audio,
+    model_path,
+    strict=False,
+    index_path=None,
+    **kwargs,
+):
     async with rvc_semaphore:
         print(f"Applying RVC model from {model_path} to {input_audio}...")
         import traceback
+
+        try:
+            if os.path.exists(output_audio):
+                os.remove(output_audio)
+        except OSError:
+            pass
         
         def run_rvc_with_method(method="rmvpe"):
             global global_rvc_instance, global_rvc_model_path
@@ -96,9 +134,11 @@ async def apply_rvc_clone(input_audio, output_audio, model_path, strict=False, *
             
             if global_rvc_model_path != model_path:
                 print("=> Nap model RVC vao VRAM (Chi chay 1 lan duy nhat)...")
-                index_path = model_path.replace(".pth", ".index")
-                if os.path.exists(index_path):
-                    global_rvc_instance.load_model(model_path, version="v2", index_path=index_path)
+                resolved_index = index_path or discover_rvc_index(model_path)
+                if resolved_index:
+                    global_rvc_instance.load_model(
+                        model_path, version="v2", index_path=resolved_index
+                    )
                 else:
                     global_rvc_instance.load_model(model_path, version="v2")
                 global_rvc_model_path = model_path
@@ -136,6 +176,13 @@ async def apply_rvc_clone(input_audio, output_audio, model_path, strict=False, *
 
         if not success:
             print(f"⚠️ CẢNH BÁO: RVC thất bại cả 3 phương pháp. Giữ file gốc.")
+            if strict:
+                try:
+                    if os.path.exists(output_audio):
+                        os.remove(output_audio)
+                except OSError:
+                    pass
+                raise RuntimeError("RVC conversion failed")
             import shutil
             shutil.copy(input_audio, output_audio)
         else:

@@ -35,7 +35,15 @@ if os.path.exists(env_file):
                 os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-WORKSPACE = os.path.abspath(os.path.join(BASE_DIR, "..", "workspace"))
+WORKSPACE = os.path.abspath(
+    os.getenv("AUTODUB_WORKSPACE", os.path.join(BASE_DIR, "..", "workspace"))
+)
+DEFAULT_INPUT_DIR = os.path.abspath(
+    os.getenv("AUTODUB_INPUT_DIR", r"D:\video_input")
+)
+DEFAULT_OUTPUT_DIR = os.path.abspath(
+    os.getenv("AUTODUB_OUTPUT_DIR", r"D:\banve")
+)
 os.makedirs(WORKSPACE, exist_ok=True)
 
 logger = logging.getLogger("batch_processor")
@@ -235,7 +243,11 @@ async def process_single_local_video(video_path: str, output_dir: str, progress_
         except:
             pass
 
-async def process_batch_folder(input_dir: str = r"D:\video_input", output_dir: str = r"D:\banve", progress_callback=None):
+async def process_batch_folder(
+    input_dir: str = DEFAULT_INPUT_DIR,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    progress_callback=None,
+):
     """
     Quét và xử lý toàn bộ video trong thư mục đầu vào
     """
@@ -296,8 +308,8 @@ async def process_batch_folder(input_dir: str = r"D:\video_input", output_dir: s
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Batch Video Dubbing Processor")
-    parser.add_argument("--input", default=r"D:\video_input", help="Thư mục chứa video gốc")
-    parser.add_argument("--output", default=r"D:\banve", help="Thư mục lưu video thành phẩm")
+    parser.add_argument("--input", default=DEFAULT_INPUT_DIR, help="Thư mục chứa video gốc")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT_DIR, help="Thư mục lưu video thành phẩm")
     args = parser.parse_args()
 
     asyncio.run(process_batch_folder(args.input, args.output))

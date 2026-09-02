@@ -81,7 +81,15 @@ def download_file_stream(url: str, dest_path: str, headers: dict = None, timeout
                         f.write(chunk)
                 f.flush()
                 os.fsync(f.fileno())
-        if os.path.getsize(temporary_path) <= 10000:
+        actual_size = os.path.getsize(temporary_path)
+        expected_size = response.headers.get("Content-Length")
+        if expected_size is not None and actual_size != int(expected_size):
+            raise DownloadValidationError(
+                "Downloaded byte size {} differs from Content-Length {}".format(
+                    actual_size, expected_size
+                )
+            )
+        if actual_size <= 10000:
             raise DownloadValidationError("Downloaded video is unexpectedly small")
         probe_downloaded_video(temporary_path)
         atomic_replace_file(temporary_path, dest_path)
@@ -167,6 +175,8 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
     Tải file bằng đa luồng HTTP Range song song với cơ chế tự động resume khi rớt mạng.
     Tăng tốc độ tải file từ máy chủ CDN quốc tế lên gấp 5-10 lần và đảm bảo không bị timeout.
     """
+    part_paths = []
+    assembled_path = None
     try:
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         req = urllib.request.Request(url, method='HEAD')
@@ -179,7 +189,9 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
 
         workers = max(1, min(int(workers), total_size))
         chunk_size = total_size // workers
-        tmp_base = dest_path + "_tmp"
+        # Each URL attempt gets isolated parts. Reusing leftovers from another
+        # CDN candidate can produce a byte-perfect size with mixed content.
+        tmp_base = "{}.{}.range".format(dest_path, uuid.uuid4().hex)
 
         def _download_part(start, end, part_num):
             part_name = f"{tmp_base}_{part_num}.part"
@@ -238,6 +250,7 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
             for i in range(workers):
                 start = i * chunk_size
                 end = total_size - 1 if i == workers - 1 else (start + chunk_size - 1)
+                part_paths.append(f"{tmp_base}_{i}.part")
                 futures.append(executor.submit(_download_part, start, end, i))
             results = [f.result() for f in futures]
 
@@ -261,17 +274,17 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
             raise DownloadValidationError("Merged Range download has the wrong byte size")
         probe_downloaded_video(assembled_path)
         atomic_replace_file(assembled_path, dest_path)
-        for p, _ in results:
-            try: os.remove(p)
-            except OSError: pass
         return True
     except Exception as e:
         logger.warning(f"Parallel Range download error for {url[:60]}: {e}")
-        assembled_path = locals().get("assembled_path")
-        if assembled_path and os.path.exists(assembled_path):
-            try: os.remove(assembled_path)
-            except OSError: pass
         return False
+    finally:
+        for temporary in [*part_paths, assembled_path]:
+            if temporary and os.path.exists(temporary):
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
 
 # =========================================================================
 # 2. BÓC TÁCH XIAOHONGSHU (REDNOTE)

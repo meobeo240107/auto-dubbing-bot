@@ -27,11 +27,19 @@ Công cụ tự động tải video, tách âm thanh nhân vật (Demucs), nhậ
    # Chọn lệnh Windows chính xác tại https://pytorch.org/get-started/locally/
    pip install -r requirements.txt
    cd backend
+   Copy-Item .env.example .env
+   # Điền BOT_TOKEN/GEMINI_API_KEY và các thư mục AUTODUB_* trong .env.
    ```
 2. Chạy Telegram Bot:
    ```bash
+   # Kiểm tra dependency, FFmpeg/NVENC, CUDA, thư mục ghi và secrets trước.
+   .\venv\Scripts\python.exe -m pipeline_v2.preflight --project-root .. --interface telegram
    python telegram_bot.py
    ```
+
+Không chạy video production nếu preflight còn `error`; với Pipeline v2, kiểm tra
+thêm `pipeline:config` đang là `v2`. Unit test không thay thế lượt thử end-to-end
+với model, API key và driver thật của máy vận hành.
 
 ## Pipeline v2 (opt-in)
 
