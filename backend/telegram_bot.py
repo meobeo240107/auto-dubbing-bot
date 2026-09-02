@@ -773,6 +773,15 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         caption_lines.append(f"📎 Link gốc: {original_url}\n")
 
+        # Tự động tải lên Google Drive nếu có cấu hình xác thực
+        try:
+            from google_drive_uploader import upload_video_to_gdrive
+            gdrive_res = upload_video_to_gdrive(final_video)
+            if gdrive_res and gdrive_res.get("link"):
+                caption_lines.append(f"☁️ Google Drive: {gdrive_res['link']}\n")
+        except Exception as ge:
+            logger.warning(f"Lỗi tự động tải Google Drive: {ge}")
+
         caption = "\n".join(caption_lines)
         if len(caption) > 1024:
             caption = caption[:1020] + "..."
@@ -1116,12 +1125,16 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         remaining = global_queue.qsize()
         queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
         caption = f"✅ Video đã lồng tiếng Tiếng Việt!\n⏱️ Thời gian xử lý: {time_str}{queue_status}"
-        
-        with open(final_video, 'rb') as vf:
-            pass # (Giữ block open để tương thích nếu cần)
-            
-        # Tạm thời không gửi video qua Telegram để tiết kiệm mạng (chỉ lưu ổ đĩa)
-        # await send_video_safely(context, update.message.chat_id, final_video, caption, status_msg, filename)
+
+        # Tự động tải lên Google Drive nếu có cấu hình xác thực
+        try:
+            from google_drive_uploader import upload_video_to_gdrive
+            gdrive_res = upload_video_to_gdrive(final_video)
+            if gdrive_res and gdrive_res.get("link"):
+                caption += f"\n\n☁️ *Link Google Drive:*\n{gdrive_res['link']}"
+        except Exception as ge:
+            logger.warning(f"Lỗi tự động tải Google Drive: {ge}")
+
         await safe_edit_status(status_msg, caption)
 
         # ===== DỌN DẸP RÁC (TRÁNH LỖI FULL Ổ CỨNG) =====
