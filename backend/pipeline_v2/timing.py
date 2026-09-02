@@ -162,11 +162,24 @@ def _copy_segments(segments: Iterable[Any]) -> List[RuntimeSegment]:
 
 
 def _split_clauses(text: str) -> List[str]:
-    parts = [
+    raw_parts = [
         part.strip()
         for part in re.split(r"(?<=[,.!?;:…，。！？；：])\s*", text.strip())
         if part.strip()
     ]
+    parts = []
+    pending_prefix = ""
+    for part in raw_parts:
+        has_spoken_content = any(character.isalnum() for character in part)
+        if has_spoken_content:
+            parts.append((pending_prefix + part).strip())
+            pending_prefix = ""
+        elif parts:
+            parts[-1] += part
+        else:
+            pending_prefix += part
+    if pending_prefix and parts:
+        parts[-1] += pending_prefix
     if len(parts) > 1:
         return parts
     words = text.split()

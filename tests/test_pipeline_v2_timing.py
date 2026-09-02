@@ -53,6 +53,26 @@ class TimingSolverTests(unittest.TestCase):
             {item.source_segment_id for item in solved.segments}, {4}
         )
 
+    def test_split_never_emits_punctuation_only_tts_segments(self):
+        segment = RuntimeSegment(
+            index=26,
+            start=timedelta(seconds=100.91),
+            end=timedelta(seconds=102.09),
+            content="Nếu... nếu ba...",
+            source_segment_id=26,
+        )
+
+        solved = solve_segment_timing([segment])
+
+        self.assertGreater(len(solved.segments), 1)
+        self.assertTrue(
+            all(any(character.isalnum() for character in item.content) for item in solved.segments)
+        )
+        self.assertEqual(
+            "".join(item.content for item in solved.segments).replace(" ", ""),
+            segment.content.replace(" ", ""),
+        )
+
     def test_plan_requires_only_light_atempo(self):
         segment = RuntimeSegment(
             index=1,
