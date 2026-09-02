@@ -42,83 +42,125 @@ def separate_vocals_demucs(
     timeout_seconds=300,
 ):
     """
-    Sử dụng Demucs để tách vocal ra khỏi nhạc nền siêu tốc.
+    Tách vocal bằng BS-RoFormer, tự động fallback về Demucs fine-tuned.
+
+    Tên hàm cũ được giữ để không phá API V1/V2.
     Trả về (vocals_path, no_vocals_path)
     """
-    import subprocess
-    import sys
-    import os
-    
-    # Resolve đường dẫn tuyệt đối để tránh lỗi ký tự đặc biệt và ".."
+    from ai.model_policy import current_model_policy, ordered_unique
+    from ai.model_runtime import ModelRuntimeError, run_model_stage, runtime_module_available
+
     input_audio_path = os.path.abspath(input_audio_path)
     output_dir = os.path.abspath(output_dir)
-    
+
     if not os.path.exists(input_audio_path):
-        print(f"File audio không tồn tại: {input_audio_path}")
-        return input_audio_path, input_audio_path
-    
-    print(f"Bắt đầu tách âm thanh bằng Demucs (Tối ưu tốc độ) cho {input_audio_path}...")
-    try:
-        # Dùng python của venv để đảm bảo demucs được tìm thấy
-        venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "Scripts", "python.exe")
-        if not os.path.exists(venv_python):
-            venv_python = sys.executable  # Fallback
-        
-        cpu_jobs = max(1, (os.cpu_count() or 4) - 1)
-        model_name = "htdemucs"
-        
-        # Tối ưu hóa siêu tốc:
-        # 1. -n htdemucs: Bản 1 model nhanh gấp 4 lần htdemucs_ft (4 models)
-        # 2. --shifts 0: Tắt shift trick để tăng tốc thêm gấp 2-3 lần
-        # 3. --overlap 0.1: Giảm độ đè lặp phân đoạn
-        # 4. -j cpu_jobs: Tận dụng toàn bộ luồng CPU đa nhân
-        import torch
-        device_args = ["-d", "cuda"] if torch.cuda.is_available() else ["-d", "cpu", "-j", str(cpu_jobs)]
-        
-        cmd = [
-            venv_python, "-m", "demucs",
-            input_audio_path,
-            "-n", model_name,
-            "--two-stems", "vocals",
-            "--shifts", "0",
-            "--overlap", "0.1",
-            "-o", output_dir
-        ]
-        # Pipeline v2 passes 6 seconds to cap peak VRAM on RTX 4050 6 GB.
-        # ``None`` deliberately preserves the legacy command line unchanged.
-        if segment_seconds is not None:
-            segment_seconds = float(segment_seconds)
-            if segment_seconds <= 0:
-                raise ValueError("segment_seconds must be positive")
-            cmd.extend(["--segment", "{:g}".format(segment_seconds)])
-        cmd += device_args
-        subprocess.run(
-            cmd,
-            check=True,
-            timeout=timeout_seconds,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        
-        base_name = os.path.splitext(os.path.basename(input_audio_path))[0]
-        demucs_out_dir = os.path.join(output_dir, model_name, base_name)
-        
-        vocals_path = os.path.join(demucs_out_dir, "vocals.wav")
-        no_vocals_path = os.path.join(demucs_out_dir, "no_vocals.wav")
-        
-        if os.path.exists(vocals_path) and os.path.exists(no_vocals_path):
-            print(f"Demucs tách thành công! Vocals: {vocals_path}")
-            return vocals_path, no_vocals_path
+        raise FileNotFoundError("File audio không tồn tại: {}".format(input_audio_path))
+    os.makedirs(output_dir, exist_ok=True)
+    if segment_seconds is not None and float(segment_seconds) <= 0:
+        raise ValueError("segment_seconds must be positive")
+
+    policy = current_model_policy()
+    failures = []
+
+    if policy.separator_backend in {"auto", "roformer"}:
+        if runtime_module_available("audio_separator", policy):
+            print(
+                "Bắt đầu tách giọng bằng BS-RoFormer {}...".format(
+                    policy.separator_model
+                )
+            )
+            try:
+                result = run_model_stage(
+                    "separator",
+                    {
+                        "input_audio": input_audio_path,
+                        "output_directory": os.path.join(output_dir, "bs_roformer"),
+                        "model_directory": os.path.join(
+                            policy.model_cache_directory, "source-separation"
+                        ),
+                        "model_filename": policy.separator_model,
+                        "use_native_fp16": True,
+                    },
+                    timeout_seconds=float(timeout_seconds),
+                    policy=policy,
+                )
+                vocals_path = str(result["vocals_path"])
+                background_path = str(result["background_path"])
+                if os.path.isfile(vocals_path) and os.path.isfile(background_path):
+                    print(
+                        "BS-RoFormer tách thành công ({}).".format(
+                            result.get("effective_precision", "unknown precision")
+                        )
+                    )
+                    return vocals_path, background_path
+                raise RuntimeError("BS-RoFormer output is incomplete")
+            except (ModelRuntimeError, OSError, KeyError, RuntimeError) as exc:
+                failures.append("BS-RoFormer: {}".format(exc))
+                print("BS-RoFormer lỗi; chuyển sang Demucs fine-tuned: {}".format(exc))
         else:
-            # Tìm đệ quy nếu thư mục đặt tên khác
-            for root, dirs, files in os.walk(output_dir):
+            failures.append("BS-RoFormer runtime unavailable")
+
+    venv_python = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "venv", "Scripts", "python.exe"
+    )
+    if not os.path.exists(venv_python):
+        venv_python = sys.executable
+    cpu_jobs = max(1, (os.cpu_count() or 4) - 1)
+    import torch
+
+    device_args = (
+        ["-d", "cuda"]
+        if torch.cuda.is_available()
+        else ["-d", "cpu", "-j", str(cpu_jobs)]
+    )
+    base_name = os.path.splitext(os.path.basename(input_audio_path))[0]
+    for model_number, model_name in enumerate(
+        ordered_unique(policy.demucs_primary_model, policy.demucs_fallback_model), 1
+    ):
+        try:
+            print("Đang tách bằng Demucs model {}...".format(model_name))
+            command = [
+                venv_python,
+                "-m",
+                "demucs",
+                input_audio_path,
+                "-n",
+                model_name,
+                "--two-stems",
+                "vocals",
+                "--shifts",
+                "1" if model_number == 1 else "0",
+                "--overlap",
+                "0.25" if model_number == 1 else "0.1",
+                "-o",
+                output_dir,
+            ]
+            if segment_seconds is not None:
+                command.extend(["--segment", "{:g}".format(float(segment_seconds))])
+            command += device_args
+            subprocess.run(
+                command,
+                check=True,
+                timeout=float(timeout_seconds),
+                creationflags=CREATE_NO_WINDOW,
+            )
+            model_output = os.path.join(output_dir, model_name, base_name)
+            vocals_path = os.path.join(model_output, "vocals.wav")
+            background_path = os.path.join(model_output, "no_vocals.wav")
+            if os.path.isfile(vocals_path) and os.path.isfile(background_path):
+                print("Demucs {} tách thành công.".format(model_name))
+                return vocals_path, background_path
+            for root, _directories, files in os.walk(output_dir):
                 if "vocals.wav" in files and "no_vocals.wav" in files:
-                    return os.path.join(root, "vocals.wav"), os.path.join(root, "no_vocals.wav")
-            print(f"Demucs chạy xong nhưng không tìm thấy file output tại {demucs_out_dir}")
-            return input_audio_path, input_audio_path
-            
-    except Exception as e:
-        print(f"Lỗi khi chạy Demucs: {e}")
-        return input_audio_path, input_audio_path
+                    return (
+                        os.path.join(root, "vocals.wav"),
+                        os.path.join(root, "no_vocals.wav"),
+                    )
+            raise RuntimeError("Demucs output files were not found")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            failures.append("Demucs {}: {}".format(model_name, exc))
+
+    raise RuntimeError("Không thể tách giọng: {}".format(" | ".join(failures)))
 
 def merge_audio_files_with_delay(video_path, original_audio_path, dubbing_audio_files, output_video_path, original_volume=0.1, dub_volume=1.0):
     """
@@ -366,3 +408,4 @@ def process_video(
         if os.path.exists(safe_sub_path):
             try: os.remove(safe_sub_path)
             except: pass
+

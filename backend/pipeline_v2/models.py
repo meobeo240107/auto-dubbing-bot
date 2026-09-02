@@ -345,3 +345,5 @@ class JobManifest:
             created_at=str(data["created_at"]),
             updated_at=str(data["updated_at"]),
         )
+
+

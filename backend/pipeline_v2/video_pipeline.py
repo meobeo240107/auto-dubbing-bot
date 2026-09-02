@@ -66,7 +66,7 @@ V2_STAGE_ORDER = (
 # Bump this value whenever artifact semantics change.  It participates in the
 # manifest fingerprint so an upgraded runner cannot silently reuse output from
 # an older implementation that happened to have the same environment flags.
-PIPELINE_IMPLEMENTATION_VERSION = "2.2.1"
+PIPELINE_IMPLEMENTATION_VERSION = "2.3.0"
 
 
 class QCGateBlocked(RuntimeError):
@@ -332,9 +332,47 @@ class VideoPipelineRunner:
 
     def _load_or_create_manifest(self) -> JobManifest:
         source_hash, source_size = hash_file(self.video_path)
+        try:
+            from ai.model_policy import current_model_policy
+        except ImportError:
+            from backend.ai.model_policy import current_model_policy
+
+        selected_models = current_model_policy()
         model_fingerprints = {
-            "whisper": fingerprint_json("large-v3:int8_float16"),
-            "demucs": fingerprint_json("htdemucs:two-stems:segment=6"),
+            "whisper": fingerprint_json(
+                {
+                    "backend": selected_models.asr_backend,
+                    "primary": selected_models.qwen_asr_model,
+                    "aligner": selected_models.qwen_aligner_model,
+                    "fallback": selected_models.whisper_model,
+                }
+            ),
+            "demucs": fingerprint_json(
+                {
+                    "backend": selected_models.separator_backend,
+                    "primary": selected_models.separator_model,
+                    "fallbacks": [
+                        selected_models.demucs_primary_model,
+                        selected_models.demucs_fallback_model,
+                    ],
+                    "segment_seconds": 6,
+                }
+            ),
+            "ocr": fingerprint_json(
+                {
+                    "backend": selected_models.ocr_backend,
+                    "primary": selected_models.paddle_ocr_version,
+                    "engine": selected_models.paddle_ocr_engine,
+                    "fallback": "easyocr:ch_sim",
+                }
+            ),
+            "translation": fingerprint_json(
+                {
+                    "gemini": selected_models.gemini_model,
+                    "openai": selected_models.openai_model,
+                    "deepseek": selected_models.deepseek_model,
+                }
+            ),
         }
         if self.request.rvc_model_path and is_real_rvc_model(self.request.rvc_model_path):
             model_fingerprints["rvc"], _ = hash_file(self.request.rvc_model_path)
@@ -352,6 +390,7 @@ class VideoPipelineRunner:
                     "voice_param": self.request.voice_param,
                     "clean_audio_hint": self.request.clean_audio_hint,
                     "delogo": self.request.delogo,
+                    "model_policy": selected_models.fingerprint_payload(),
                 }
             ),
             model_sha256=model_fingerprints,
@@ -703,7 +742,7 @@ class VideoPipelineRunner:
                 )
                 segment_payload = segments_to_dicts(segments)
             if not segment_payload:
-                raise RuntimeError("Whisper returned no speech segments")
+                raise RuntimeError("ASR returned no speech segments")
             from .gender_detector import enrich_segments_with_gender
             runtime_segs = segments_from_dicts(segment_payload)
             enriched_segs = await asyncio.to_thread(

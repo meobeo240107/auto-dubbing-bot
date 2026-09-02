@@ -279,15 +279,18 @@ class GeminiTimingRewriter:
     def __init__(
         self,
         api_key: str,
-        models: Sequence[str] = (
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-        ),
+        models: Optional[Sequence[str]] = None,
         timeout_seconds: float = 60.0,
         max_batch_requests: int = 60,
     ):
         self.api_key = api_key
+        if models is None:
+            try:
+                from ai.model_policy import current_model_policy
+            except ImportError:
+                from backend.ai.model_policy import current_model_policy
+
+            models = current_model_policy().gemini_candidates
         self.models = tuple(models)
         self.timeout_seconds = timeout_seconds
         self.max_batch_requests = max(1, int(max_batch_requests))

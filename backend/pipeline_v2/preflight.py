@@ -17,6 +17,13 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 from .config import PipelineSettings
 from .stage_validation import is_real_rvc_model
 
+try:
+    from ai.model_policy import RuntimeModelPolicy
+    from ai.model_runtime import runtime_module_available
+except ImportError:
+    from backend.ai.model_policy import RuntimeModelPolicy
+    from backend.ai.model_runtime import runtime_module_available
+
 
 @dataclass(frozen=True)
 class PreflightCheck:
@@ -177,6 +184,75 @@ def _rvc_check(project_root: Path, settings: PipelineSettings) -> PreflightCheck
     )
 
 
+def _strong_model_checks(
+    project_root: Path, environment: Mapping[str, str]
+) -> List[PreflightCheck]:
+    try:
+        policy = RuntimeModelPolicy.from_env(environment, project_root=project_root)
+    except ValueError as exc:
+        return [PreflightCheck("models:policy", "error", str(exc))]
+    checks = [
+        PreflightCheck(
+            "models:policy",
+            "pass",
+            "ASR={} separator={} OCR={}".format(
+                policy.asr_backend, policy.separator_backend, policy.ocr_backend
+            ),
+        )
+    ]
+    runtime_python = policy.runtime_python_path()
+    checks.append(
+        PreflightCheck(
+            "models:runtime",
+            "pass" if runtime_python.is_file() else "warning",
+            str(runtime_python)
+            if runtime_python.is_file()
+            else "missing; proven fallback models remain active",
+        )
+    )
+    modules = (
+        (
+            "models:qwen3_asr",
+            "qwen_asr",
+            "{} + {}".format(policy.qwen_asr_model, policy.qwen_aligner_model),
+            "Faster-Whisper {}".format(policy.whisper_model),
+        ),
+        (
+            "models:bs_roformer",
+            "audio_separator",
+            policy.separator_model,
+            "Demucs {}".format(policy.demucs_primary_model),
+        ),
+        (
+            "models:pp_ocr_v6",
+            "paddleocr",
+            "{} via {}".format(
+                policy.paddle_ocr_version, policy.paddle_ocr_engine
+            ),
+            "EasyOCR ch_sim",
+        ),
+    )
+    for name, module, primary, fallback in modules:
+        available = runtime_module_available(module, policy) if runtime_python.is_file() else False
+        checks.append(
+            PreflightCheck(
+                name,
+                "pass" if available else "warning",
+                primary if available else "unavailable; fallback={}".format(fallback),
+            )
+        )
+    checks.append(
+        PreflightCheck(
+            "models:translation",
+            "pass",
+            "Gemini={} OpenAI={} DeepSeek={}".format(
+                policy.gemini_model, policy.openai_model, policy.deepseek_model
+            ),
+        )
+    )
+    return checks
+
+
 def run_preflight(
     project_root: Path,
     interface: str = "all",
@@ -220,6 +296,7 @@ def run_preflight(
     checks.append(_nvenc_check())
     checks.append(_cuda_check())
     checks.append(_rvc_check(root, settings))
+    checks.extend(_strong_model_checks(root, env))
 
     workspace = Path(env.get("AUTODUB_WORKSPACE", str(root / "workspace")))
     output = Path(env.get("AUTODUB_OUTPUT_DIR", r"D:\banve"))
@@ -321,3 +398,4 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

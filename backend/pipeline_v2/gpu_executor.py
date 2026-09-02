@@ -106,3 +106,5 @@ class GPUStageExecutor:
                     "GPU stage {!r} failed: {}".format(stage, detail or "unknown error")
                 )
             return dict(response.get("result", {}))
+
+

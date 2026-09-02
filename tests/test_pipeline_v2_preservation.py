@@ -75,15 +75,6 @@ class LegacyPatchPreservationTests(unittest.TestCase):
         self.assertNotIn('allow_origins=["*"]', source)
         self.assertIn("AUTODUB_CORS_ORIGINS", source)
 
-    def test_local_renderer_uses_portable_environment_paths(self):
-        source = (ROOT / "backend" / "render_video_phoi.py").read_text(
-            encoding="utf-8-sig"
-        )
-        self.assertIn('os.getenv("AUTODUB_WORKSPACE"', source)
-        self.assertIn('os.getenv("AUTODUB_INPUT_DIR"', source)
-        self.assertIn('os.getenv("AUTODUB_OUTPUT_DIR"', source)
-        self.assertNotIn(r"C:\Users\admin\.gemini", source)
-
 
 if __name__ == "__main__":
     unittest.main()

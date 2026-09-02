@@ -1,6 +1,8 @@
 # Local environments and secrets
 backend/venv/
 backend/venv_old/
+backend/model_venv/
+models/
 venv/
 env/
 *.env

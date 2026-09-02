@@ -169,9 +169,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Facebook / Instagram\n\n"
         "Bot sẽ tự động:\n"
         "1️⃣ Tải video sạch không watermark\n"
-        "2️⃣ Nhận dạng giọng nói (Whisper Large-v3 AI)\n"
+        "2️⃣ Nhận dạng giọng nói (Qwen3-ASR + Forced Aligner, fallback Whisper)\n"
         "3️⃣ Dịch phụ đề sang Tiếng Việt (Gemini 3.7 Flash)\n"
-        "4️⃣ Tách giọng & giữ nhạc nền (Meta Demucs)\n"
+        "4️⃣ Tách giọng & giữ nhạc nền (BS-RoFormer, fallback Demucs)\n"
         "5️⃣ Lồng tiếng Tiếng Việt (Microsoft Neural TTS)\n"
         "6️⃣ Xuất video chất lượng cao lưu vào `D:\\banve`\n\n"
         "📌 *Lệnh hỗ trợ:*\n"
@@ -568,7 +568,7 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await safe_edit_status(
             status_msg,
             f"🎧 *Trích xuất xong!*\n`{url}`\n\n"
-            "🧠 *Bước 2.5/6:* AI Demucs đang tách giọng nhân vật khỏi nhạc nền (Sẽ hơi lâu)...",
+            "🧠 *Bước 2.5/6:* BS-RoFormer đang tách giọng nhân vật khỏi nhạc nền...",
             parse_mode="Markdown"
         )
         from video_utils import separate_vocals_demucs
@@ -579,7 +579,7 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await safe_edit_status(
             status_msg,
             f"🧠 *Tách âm thanh nền xong!*\n`{url}`\n\n"
-            "🤖 *Bước 3/6:* Whisper AI đang nhận dạng từ Vocal sạch...",
+            "🤖 *Bước 3/6:* Qwen3-ASR đang nhận dạng và căn timestamp từ vocal sạch...",
             parse_mode="Markdown"
         )
         # Sử dụng vocals_audio (giọng sạch) thay vì original_audio
@@ -967,13 +967,13 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         await asyncio.to_thread(extract_audio_from_video, video_path, original_audio)
 
         # ===== BƯỚC 2.5: TÁCH VOCAL BẰNG DEMUCS =====
-        await safe_edit_status(status_msg, "🎧 Đang tách giọng nhân vật khỏi nhạc nền (Demucs)...")
+        await safe_edit_status(status_msg, "🎧 Đang tách giọng khỏi nhạc nền (BS-RoFormer / Demucs fallback)...")
         from video_utils import separate_vocals_demucs
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
         vocals_audio, no_vocals_audio = await asyncio.to_thread(separate_vocals_demucs, original_audio, out_dir)
 
         # ===== BƯỚC 3: NHẬN DẠNG GIỌNG NÓI =====
-        await safe_edit_status(status_msg, "🤖 Whisper AI đang nhận dạng từ Vocal sạch...")
+        await safe_edit_status(status_msg, "🤖 Qwen3-ASR đang nhận dạng và căn timestamp từ vocal sạch...")
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
         srt_segments = await asyncio.to_thread(extract_subtitles_whisper, vocals_audio, srt_original)
 
@@ -1248,3 +1248,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

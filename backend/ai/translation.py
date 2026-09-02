@@ -17,6 +17,8 @@ import re
 from deep_translator import GoogleTranslator
 import logging
 
+from .model_policy import current_model_policy, ordered_unique
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,7 +109,7 @@ def translate_with_gemini(
         if frames:
             logger.info(f"Đã đính kèm {len(frames)} ảnh từ video vào Gemini Vision.")
         
-        models_to_try = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+        models_to_try = current_model_policy().gemini_candidates
         response = None
         for model in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -148,7 +150,7 @@ def translate_with_openai(
     context_start_seconds=None,
     context_end_seconds=None,
     prior_context=None,
-    model="gpt-4o",
+    model=None,
     **kwargs
 ):
     api_key = api_key or os.getenv("OPENAI_API_KEY", "")
@@ -165,10 +167,8 @@ def translate_with_openai(
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
             })
             
-        openai_models = [model, "gpt-4o", "gpt-4o-mini", "chatgpt-4o-latest"]
-        seen_models = []
-        for m in openai_models:
-            if m not in seen_models: seen_models.append(m)
+        policy = current_model_policy()
+        seen_models = ordered_unique(model, *policy.openai_candidates)
             
         for om in seen_models:
             try:
@@ -210,7 +210,7 @@ def translate_with_deepseek(
     target_lang="vi",
     api_key="",
     prior_context=None,
-    model="deepseek-v4",
+    model=None,
     **kwargs
 ):
     api_key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
@@ -218,10 +218,8 @@ def translate_with_deepseek(
         return None
     try:
         prompt = build_translation_prompt(texts, target_lang, prior_context, with_vision=False)
-        models_to_try = [model, "deepseek-v4", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"]
-        seen = []
-        for m in models_to_try:
-            if m not in seen: seen.append(m)
+        policy = current_model_policy()
+        seen = ordered_unique(model, *policy.deepseek_candidates)
             
         for dm in seen:
             try:
@@ -446,3 +444,4 @@ def translate_subtitles(
         )
 
     return srt_segments
+

@@ -151,35 +151,9 @@ async def process_single_local_video(video_path: str, output_dir: str, progress_
         translated_segments = await asyncio.to_thread(translate_subtitles, srt_segments, "vi", api_key=GEMINI_API_KEY, video_path=video_path)
         await asyncio.to_thread(save_srt, translated_segments, srt_translated)
 
-        # Khôi phục giọng RVC (Đáng yêu / Chí Mai)
-        rvc_model_path = None
-        search_dirs = [
-            os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
-            os.path.join(WORKSPACE, "..", "MyVoiceModel_v2"),
-            os.path.join(WORKSPACE, "MyVoiceModel_v2"),
-            os.path.join(WORKSPACE, "models", "rvc"),
-            os.path.join(os.path.dirname(__file__), "..", "models", "rvc"),
-        ]
-        for d in search_dirs:
-            if os.path.exists(d):
-                for f in sorted(os.listdir(d)):
-                    if f.endswith(".pth"):
-                        candidate = os.path.join(d, f)
-                        try:
-                            if os.path.getsize(candidate) > 1024:
-                                rvc_model_path = candidate
-                                break
-                        except OSError:
-                            continue
-            if rvc_model_path:
-                break
-                
-        v_source = "rvc" if rvc_model_path else "edge"
-        v_param = rvc_model_path if rvc_model_path else "vi-VN-HoaiMyNeural"
-        
-        await notify(f"🗣️ Bước 5/6: Đang lồng tiếng AI ({'Giọng Chí Mai RVC' if v_source == 'rvc' else 'Giọng Hoài My'})...")
+        await notify("🗣️ Bước 5/6: Microsoft Neural TTS đang lồng tiếng AI...")
         dubbing_audio_files = await generate_dubbing_audio(
-            translated_segments, dubbing_dir, voice_source=v_source, voice_param=v_param
+            translated_segments, dubbing_dir, voice_source="edge", voice_param="vi-VN-HoaiMyNeural"
         )
 
         # Căn chỉnh phụ đề ASS

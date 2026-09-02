@@ -37,3 +37,5 @@ async def run_ocr_and_translation(
     ocr_result = await _invoke(ocr_callback)
     translation_result = await _invoke(translation_callback)
     return ParallelContextResult(ocr_result, translation_result, False)
+
+

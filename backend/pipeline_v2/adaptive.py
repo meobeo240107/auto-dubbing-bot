@@ -245,3 +245,5 @@ def choose_output_dimensions(
     width = max(2, int(source_width * scale) // 2 * 2)
     height = max(2, int(source_height * scale) // 2 * 2)
     return width, height
+
+
