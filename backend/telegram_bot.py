@@ -37,9 +37,16 @@ if os.path.exists(env_file):
                 os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
 # ===== CẤU HÌNH =====
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-FPT_API_KEY = os.getenv("FPT_API_KEY", "YOUR_FPT_API_KEY")
+def configured_secret(name):
+    value = os.getenv(name, "").strip()
+    if value.upper().startswith(("YOUR_", "PASTE_")):
+        return ""
+    return value
+
+
+BOT_TOKEN = configured_secret("BOT_TOKEN")
+GEMINI_API_KEY = configured_secret("GEMINI_API_KEY")
+FPT_API_KEY = configured_secret("FPT_API_KEY")
 
 # Import các module xử lý từ backend
 sys.path.insert(0, os.path.dirname(__file__))
@@ -54,9 +61,17 @@ if isinstance(sys.stderr, io.TextIOWrapper):
 from ai.transcription import extract_subtitles_whisper, save_srt
 from ai.translation import translate_subtitles
 from ai.voice_cloning import generate_dubbing_audio
+from url_utils import extract_http_urls
 from video_utils import extract_audio_from_video, mix_audio_pydub, process_video
 
-WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
+WORKSPACE = os.path.abspath(
+    os.getenv(
+        "AUTODUB_WORKSPACE",
+        os.path.join(os.path.dirname(__file__), "..", "workspace"),
+    )
+)
+INPUT_DIR = os.path.abspath(os.getenv("AUTODUB_INPUT_DIR", r"D:\video_input"))
+OUTPUT_DIR = os.path.abspath(os.getenv("AUTODUB_OUTPUT_DIR", r"D:\banve"))
 os.makedirs(WORKSPACE, exist_ok=True)
 
 logging.basicConfig(
@@ -160,6 +175,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "5️⃣ Lồng tiếng Tiếng Việt (Microsoft Neural TTS)\n"
         "6️⃣ Xuất video chất lượng cao lưu vào `D:\\banve`\n\n"
         "📌 *Lệnh hỗ trợ:*\n"
+        "• `/llm` - Cấu hình mô hình AI dịch thuật (Google Gemini / OpenAI GPT-4o / DeepSeek V4)\n"
         "• `/batch` - Tự động quét & edit hàng loạt video trong thư mục `D:\\video_input` trên máy\n"
         "• `/batch D:\\thu_muc` - Chỉ định thư mục chứa video cần edit\n"
         "• `/status` - Kiểm tra trạng thái hàng đợi\n"
@@ -230,6 +246,42 @@ async def cmd_batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
             
     asyncio.create_task(process_batch_folder(input_dir, output_dir, telegram_progress))
+
+async def cmd_llm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xem hoặc chuyển đổi nhà cung cấp AI dịch thuật (Gemini / OpenAI ChatGPT / DeepSeek)."""
+    args = context.args
+    current_provider = os.getenv("LLM_PROVIDER", "auto").lower()
+    
+    gemini_status = "🟢 Đã nạp Key" if os.getenv("GEMINI_API_KEY") else "⚪ Chưa cấu hình"
+    openai_status = "🟢 Đã nạp Key" if os.getenv("OPENAI_API_KEY") else "⚪ Chưa cấu hình"
+    deepseek_status = "🟢 Đã nạp Key" if os.getenv("DEEPSEEK_API_KEY") else "⚪ Chưa cấu hình"
+    
+    if not args:
+        await update.message.reply_text(
+            f"🧠 *CẤU HÌNH NHÀ CUNG CẤP AI DỊCH THUẬT (LLM)*\n\n"
+            f"📍 *Chế độ ưu tiên hiện tại:* `{current_provider.upper()}`\n\n"
+            f"🔹 **Google Gemini (Vision 3.5/3.7):** {gemini_status}\n"
+            f"🔹 **OpenAI ChatGPT (GPT-4o Vision):** {openai_status}\n"
+            f"🔹 **DeepSeek-V4 Series (Văn phong Douyin/TikTok):** {deepseek_status}\n\n"
+            f"👉 *Cách đổi mô hình ưu tiên:*\n"
+            f"• `/llm auto` - Tự động luân chuyển Gemini ➡️ OpenAI ➡️ DeepSeek (Khuyên dùng)\n"
+            f"• `/llm openai` - Ưu tiên OpenAI GPT-4o\n"
+            f"• `/llm deepseek` - Ưu tiên DeepSeek V4\n"
+            f"• `/llm gemini` - Ưu tiên Google Gemini",
+            parse_mode="Markdown"
+        )
+        return
+        
+    choice = args[0].lower().strip()
+    if choice in ("auto", "gemini", "openai", "deepseek"):
+        os.environ["LLM_PROVIDER"] = choice
+        await update.message.reply_text(
+            f"✅ Đã chuyển mô hình dịch thuật chính sang: *{choice.upper()}*!\n\n"
+            f"*(Hệ thống vẫn tự động kích hoạt chế độ Fallback nếu nhà cung cấp này gặp sự cố hoặc hết quota)*",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("❌ Lựa chọn không hợp lệ. Vui lòng chọn: `auto`, `gemini`, `openai`, hoặc `deepseek`.", parse_mode="Markdown")
 
 import shared_state
 shared_state.stop_requested = False
@@ -479,11 +531,21 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 delivery_copy_path=local_save_path,
             )
             elapsed_time = int(time.time() - start_time)
+            mins = elapsed_time // 60
+            secs = elapsed_time % 60
+            time_str = f"{mins} phút {secs} giây" if mins > 0 else f"{secs} giây"
+            remaining = global_queue.qsize()
+            queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
+            caption = (
+                f"✅ *Video đã lồng tiếng Tiếng Việt (Pipeline v2 - Âm thanh Studio)!*\n\n"
+                f"🎬 Video: `{video_title if 'video_title' in locals() else base_name}`\n"
+                f"💾 Đã tự động lưu vào máy: `D:\\banve`\n"
+                f"⏱️ Thời gian xử lý: {time_str}"
+                f"{queue_status}"
+            )
             await safe_edit_status(
                 status_msg,
-                "✅ Pipeline v2 hoàn thành trong {} giây.\n💾 Đã lưu: `{}`".format(
-                    elapsed_time, local_save_path
-                ),
+                caption,
                 parse_mode="Markdown",
             )
             return
@@ -567,12 +629,7 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # (Di chuyển BƯỚC 4.5 xuống sau BƯỚC 5 để đồng bộ thời gian biến mất của phụ đề với audio)
 
         # ===== BƯỚC 5: LỒNG TIẾNG =====
-        await safe_edit_status(
-            status_msg,
-            "🗣️ *Bước 5/6:* Đang lồng tiếng AI (Giọng Hoài My)...",
-            parse_mode="Markdown"
-        )
-        # Khôi phục giọng RVC (Đáng yêu)
+        # Khôi phục giọng RVC (Đáng yêu / Chí Mai)
         rvc_model_path = None
         search_dirs = [
             os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
@@ -596,6 +653,12 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 break
                     
         v_source = "rvc" if rvc_model_path else "edge"
+        v_label = "Giọng Chí Mai (RVC)" if v_source == "rvc" else "Giọng Hoài My"
+        await safe_edit_status(
+            status_msg,
+            f"🗣️ *Bước 5/6:* Đang lồng tiếng AI ({v_label})...",
+            parse_mode="Markdown"
+        )
         if rvc_model_path:
             v_param = rvc_model_path
         else:
@@ -741,17 +804,8 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # Tìm TẤT CẢ các URL trong tin nhắn bằng Regex (Hỗ trợ text chia sẻ từ điện thoại có chứa tiếng Trung/dấu phẩy liền kề)
-    urls = re.findall(r'(https?://[a-zA-Z0-9\-\.\/\?\:\#\=\&\%\_\~\+]+)', text)
-
-    # Loại bỏ các link trùng lặp trong cùng 1 tin nhắn
-    seen = set()
-    unique_urls = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            unique_urls.append(u)
-    urls = unique_urls
+    # Hỗ trợ nhiều URL, loại trùng và bỏ timestamp dính vào link khi copy chat.
+    urls = extract_http_urls(text)
 
     if not urls:
         await update.message.reply_text(
@@ -763,6 +817,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global queue_counter, worker_task
     import shared_state
+    shared_state.stop_requested = False
+
+    if global_queue.empty():
+        queue_counter = 0
     
     if worker_task is None or worker_task.done():
         worker_task = asyncio.create_task(video_worker())
@@ -791,6 +849,10 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Người dùng gửi file video trực tiếp qua Telegram (Đẩy vào Queue)."""
     global queue_counter, worker_task
     import shared_state
+    shared_state.stop_requested = False
+
+    if global_queue.empty():
+        queue_counter = 0
     
     if worker_task is None or worker_task.done():
         worker_task = asyncio.create_task(video_worker())
@@ -871,11 +933,21 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
                 delivery_copy_path=local_save_path,
             )
             elapsed_time = int(time.time() - start_time)
+            mins = elapsed_time // 60
+            secs = elapsed_time % 60
+            time_str = f"{mins} phút {secs} giây" if mins > 0 else f"{secs} giây"
+            remaining = global_queue.qsize()
+            queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
+            caption = (
+                f"✅ *Video đã lồng tiếng Tiếng Việt (Pipeline v2 - Âm thanh Studio)!*\n\n"
+                f"🎬 Video: `{filename}`\n"
+                f"💾 Đã tự động lưu vào máy: `D:\\banve`\n"
+                f"⏱️ Thời gian xử lý: {time_str}"
+                f"{queue_status}"
+            )
             await safe_edit_status(
                 status_msg,
-                "✅ Pipeline v2 hoàn thành trong {} giây.\n💾 Đã lưu: `{}`".format(
-                    elapsed_time, local_save_path
-                ),
+                caption,
                 parse_mode="Markdown",
             )
             return
@@ -931,9 +1003,8 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         await asyncio.to_thread(save_srt, translated_segments, srt_translated)
 
         # ===== BƯỚC 5: LỒNG TIẾNG =====
-        await safe_edit_status(status_msg, "🗣️ Đang lồng tiếng AI (Giọng Hoài My)...")
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
-        # Khôi phục giọng RVC (Đáng yêu)
+        # Khôi phục giọng RVC (Đáng yêu / Chí Mai)
         rvc_model_path = None
         search_dirs = [
             os.path.join(os.path.dirname(__file__), "..", "MyVoiceModel_v2"),
@@ -957,6 +1028,8 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
                 break
                     
         v_source = "rvc" if rvc_model_path else "edge"
+        v_label = "Giọng Chí Mai (RVC)" if v_source == "rvc" else "Giọng Hoài My"
+        await safe_edit_status(status_msg, f"🗣️ Đang lồng tiếng AI ({v_label})...")
         if rvc_model_path:
             v_param = rvc_model_path
         else:
@@ -1103,7 +1176,7 @@ def main():
         logger.warning("Bot instance already running. Exiting duplicate process.")
         sys.exit(0)
 
-    if BOT_TOKEN == "PASTE_YOUR_TOKEN_HERE":
+    if not BOT_TOKEN:
         print("=" * 60)
         print("❌ LỖI: Chưa cấu hình Bot Token!")
         print("Mở file telegram_bot.py và dán Token vào dòng BOT_TOKEN")
@@ -1139,7 +1212,6 @@ def main():
                 Application.builder()
                 .token(BOT_TOKEN)
                 .request(request)
-                .post_init(enqueue_interrupted_v2_jobs)
                 .build()
             )
 
@@ -1149,6 +1221,7 @@ def main():
             app.add_handler(CommandHandler("status", cmd_status))
             app.add_handler(CommandHandler("batch", cmd_batch))
             app.add_handler(CommandHandler("local", cmd_batch))
+            app.add_handler(CommandHandler("llm", cmd_llm))
             app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

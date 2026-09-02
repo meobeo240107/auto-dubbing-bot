@@ -14,9 +14,9 @@ from backend.pipeline_v2.stage_status import StageStatus
 
 
 class PipelineSettingsTests(unittest.TestCase):
-    def test_legacy_is_the_default(self):
+    def test_v2_is_the_default_for_the_v2_release_branch(self):
         settings = PipelineSettings.from_env({})
-        self.assertEqual(settings.mode, PipelineMode.LEGACY)
+        self.assertEqual(settings.mode, PipelineMode.V2)
         self.assertFalse(settings.enable_stage_cache)
         self.assertTrue(settings.preserve_source_resolution)
 

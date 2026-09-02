@@ -24,8 +24,8 @@ def extract_audio_from_video(video_path, output_audio_path):
     try:
         cmd = (
             ffmpeg
-            .input(video_path)
-            .output(output_audio_path, acodec='pcm_s16le', ac=2, ar='44100')
+            .input(str(video_path))
+            .output(str(output_audio_path), acodec='pcm_s16le', ac=2, ar='44100')
             .overwrite_output()
             .compile()
         )
@@ -129,11 +129,20 @@ def merge_audio_files_with_delay(video_path, original_audio_path, dubbing_audio_
     # This is a basic implementation. A more robust way is using PyDub to generate a single mixed audio track first.
     pass
     
-def mix_audio_pydub(original_audio_path, dubbing_audio_files, output_mixed_audio_path, original_volume_db=-5, dubbing_volume_db=1):
+def mix_audio_pydub(
+    original_audio_path,
+    dubbing_audio_files,
+    output_mixed_audio_path,
+    original_volume_db=-5,
+    dubbing_volume_db=1,
+    strict=False,
+    **kwargs,
+):
     """
     Trộn âm thanh bằng PyDub. Giảm âm lượng nhạc nền (-15dB, tức khoảng 15-20%) và chèn giọng đọc AI vào đúng vị trí.
     """
     print("Mixing audio tracks using pydub...")
+    original_popen = None
     try:
         import subprocess
         # Ngăn pydub nháy màn hình đen ffmpeg liên tục trên Windows
@@ -154,6 +163,10 @@ def mix_audio_pydub(original_audio_path, dubbing_audio_files, output_mixed_audio
         # Chèn từng file lồng tiếng (Khớp chính xác 100% thời gian với Subtitle)
         for dub in dubbing_audio_files:
             if not os.path.exists(dub["path"]):
+                if strict:
+                    raise FileNotFoundError(
+                        "Missing dubbing audio: {}".format(dub["path"])
+                    )
                 continue
             dub_audio = AudioSegment.from_file(dub["path"])
             # Tăng âm lượng giọng đọc nếu cần
@@ -166,11 +179,28 @@ def mix_audio_pydub(original_audio_path, dubbing_audio_files, output_mixed_audio
         return output_mixed_audio_path
     except Exception as e:
         print(f"PyDub error: {e}. Fallback to original audio.")
+        if strict:
+            raise RuntimeError("PyDub legacy mix failed") from e
         import shutil
         shutil.copy(original_audio_path, output_mixed_audio_path)
         return output_mixed_audio_path
+    finally:
+        if original_popen is not None:
+            subprocess.Popen = original_popen
 
-def process_video(video_path, srt_path, mixed_audio_path, output_video_path, font_name="Arial", font_color="&H00FFFFFF", font_weight=1, main_y_pct=0.75, delogo=True):
+def process_video(
+    video_path,
+    srt_path,
+    mixed_audio_path,
+    output_video_path,
+    font_name="Arial",
+    font_color="&H00FFFFFF",
+    font_weight=1,
+    main_y_pct=0.75,
+    delogo=True,
+    timeout_seconds=None,
+    **kwargs,
+):
     """
     Dùng ffmpeg để chèn hardsub, xóa sạch watermark gốc và ghép âm thanh mới.
     """
@@ -178,6 +208,18 @@ def process_video(video_path, srt_path, mixed_audio_path, output_video_path, fon
     if getattr(shared_state, 'stop_requested', False):
         print("Lệnh /stop đã được yêu cầu. Hủy render video.")
         return False
+
+    video_path = os.fspath(video_path)
+    srt_path = os.fspath(srt_path)
+    mixed_audio_path = os.fspath(mixed_audio_path)
+    output_video_path = os.fspath(output_video_path)
+
+    render_deadline = None
+    if timeout_seconds is not None:
+        timeout_seconds = float(timeout_seconds)
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        render_deadline = time.monotonic() + timeout_seconds
 
     print("Processing final video with styled subtitles, auto-delogo and hardware encoder...")
     
@@ -287,13 +329,30 @@ def process_video(video_path, srt_path, mixed_audio_path, output_video_path, fon
             ]
             
             try:
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW, encoding='utf-8', errors='ignore')
+                command_timeout = None
+                if render_deadline is not None:
+                    command_timeout = render_deadline - time.monotonic()
+                    if command_timeout <= 0:
+                        print("Đã hết thời gian render trước khi thử encoder tiếp theo.")
+                        break
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=CREATE_NO_WINDOW,
+                    encoding='utf-8',
+                    errors='ignore',
+                    timeout=command_timeout,
+                )
                 if proc.returncode == 0 and os.path.exists(output_video_path) and os.path.getsize(output_video_path) > 10000:
                     print(f"Render video thành công bằng encoder: {encoder_name}")
                     return True
                 else:
                     err_snippet = proc.stderr[-400:] if proc.stderr else ""
                     print(f"Encoder {encoder_name} không thành công ({proc.returncode}): {err_snippet}")
+            except subprocess.TimeoutExpired as enc_err:
+                print(f"Encoder {encoder_name} vượt quá deadline render ({enc_err}).")
+                break
             except Exception as enc_err:
                 print(f"Encoder {encoder_name} gặp ngoại lệ ({enc_err}), chuyển sang encoder dự phòng...")
                 

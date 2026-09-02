@@ -81,7 +81,15 @@ def download_file_stream(url: str, dest_path: str, headers: dict = None, timeout
                         f.write(chunk)
                 f.flush()
                 os.fsync(f.fileno())
-        if os.path.getsize(temporary_path) <= 10000:
+        actual_size = os.path.getsize(temporary_path)
+        expected_size = response.headers.get("Content-Length")
+        if expected_size is not None and actual_size != int(expected_size):
+            raise DownloadValidationError(
+                "Downloaded byte size {} differs from Content-Length {}".format(
+                    actual_size, expected_size
+                )
+            )
+        if actual_size <= 10000:
             raise DownloadValidationError("Downloaded video is unexpectedly small")
         probe_downloaded_video(temporary_path)
         atomic_replace_file(temporary_path, dest_path)
@@ -167,6 +175,8 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
     Tải file bằng đa luồng HTTP Range song song với cơ chế tự động resume khi rớt mạng.
     Tăng tốc độ tải file từ máy chủ CDN quốc tế lên gấp 5-10 lần và đảm bảo không bị timeout.
     """
+    part_paths = []
+    assembled_path = None
     try:
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         req = urllib.request.Request(url, method='HEAD')
@@ -179,7 +189,9 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
 
         workers = max(1, min(int(workers), total_size))
         chunk_size = total_size // workers
-        tmp_base = dest_path + "_tmp"
+        # Each URL attempt gets isolated parts. Reusing leftovers from another
+        # CDN candidate can produce a byte-perfect size with mixed content.
+        tmp_base = "{}.{}.range".format(dest_path, uuid.uuid4().hex)
 
         def _download_part(start, end, part_num):
             part_name = f"{tmp_base}_{part_num}.part"
@@ -238,6 +250,7 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
             for i in range(workers):
                 start = i * chunk_size
                 end = total_size - 1 if i == workers - 1 else (start + chunk_size - 1)
+                part_paths.append(f"{tmp_base}_{i}.part")
                 futures.append(executor.submit(_download_part, start, end, i))
             results = [f.result() for f in futures]
 
@@ -261,17 +274,17 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
             raise DownloadValidationError("Merged Range download has the wrong byte size")
         probe_downloaded_video(assembled_path)
         atomic_replace_file(assembled_path, dest_path)
-        for p, _ in results:
-            try: os.remove(p)
-            except OSError: pass
         return True
     except Exception as e:
         logger.warning(f"Parallel Range download error for {url[:60]}: {e}")
-        assembled_path = locals().get("assembled_path")
-        if assembled_path and os.path.exists(assembled_path):
-            try: os.remove(assembled_path)
-            except OSError: pass
         return False
+    finally:
+        for temporary in [*part_paths, assembled_path]:
+            if temporary and os.path.exists(temporary):
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
 
 # =========================================================================
 # 2. BÓC TÁCH XIAOHONGSHU (REDNOTE)
@@ -290,29 +303,56 @@ def download_xiaohongshu(url: str, output_dir: str, prefix: str) -> tuple:
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
         }
         
-        # Chuẩn hóa link rút gọn sang HTTPS để tránh bị timeout trên một số mạng
-        target_fetch_url = url.strip()
-        if target_fetch_url.startswith("http://xhslink.com"):
-            target_fetch_url = target_fetch_url.replace("http://xhslink.com", "https://xhslink.com")
+        # Tạo danh sách các link ứng viên (tự động chữa lỗi nhầm ký tự l / I / 1 / 0 / O)
+        fetch_candidates = [url.strip()]
+        if url.strip().startswith("http://xhslink.com"):
+            fetch_candidates.append(url.strip().replace("http://xhslink.com", "https://xhslink.com"))
+
+        m_code = re.search(r'xhslink\.com/(?:o/)?([a-zA-Z0-9]+)', url)
+        if m_code:
+            code = m_code.group(1)
+            last = code[-1]
+            swap_map = {
+                'l': ['I', '1'],
+                'I': ['l', '1'],
+                '1': ['I', 'l'],
+                '0': ['O', 'o'],
+                'O': ['0', 'o'],
+                'o': ['0', 'O']
+            }
+            if last in swap_map:
+                for alt in swap_map[last]:
+                    alt_code = code[:-1] + alt
+                    fetch_candidates.append(url.replace(code, alt_code))
+                    fetch_candidates.append(f"https://xhslink.com/o/{alt_code}")
 
         res = None
-        for attempt in range(2):
-            try:
-                res = requests.get(target_fetch_url, headers=headers, allow_redirects=True, timeout=(15, 25))
-                if res.status_code == 200:
-                    break
-            except Exception as req_err:
-                logger.warning(f"Lần thử {attempt + 1} tải trang XHS thất bại ({req_err})")
-                if attempt == 0:
-                    headers['User-Agent'] = USER_AGENTS["desktop"]
+        for candidate_url in fetch_candidates:
+            for attempt in range(2):
+                try:
+                    r = requests.get(candidate_url, headers=headers, allow_redirects=True, timeout=(15, 25))
+                    clean_path = r.url.split('?')[0].rstrip('/').lower()
+                    is_missing = clean_path in ["https://www.xiaohongshu.com", "http://www.xiaohongshu.com", "https://xiaohongshu.com", 
+                                                "https://www.xiaohongshu.com/explore", "http://www.xiaohongshu.com/explore",
+                                                "https://www.xiaohongshu.com/discovery", "http://www.xiaohongshu.com/discovery"] or any(msg in r.text for msg in ["你访问的页面不见了", "页面不存在", "该笔记已被删除", "笔记不存在"])
+                    if r.status_code == 200 and not is_missing:
+                        res = r
+                        logger.info(f"Đã giải mã thành công link XHS: {candidate_url} -> {r.url[:80]}")
+                        break
+                    elif r.status_code == 200 and is_missing:
+                        logger.warning(f"Link XHS '{candidate_url}' bị 404/Explore, tiếp tục thử các biến thể khác...")
+                except Exception as req_err:
+                    logger.warning(f"Thử tải '{candidate_url}' thất bại ({req_err})")
+                    if attempt == 0:
+                        headers['User-Agent'] = USER_AGENTS["desktop"]
+            if res is not None:
+                break
 
         if res is None:
-            return False, "", "", "Không thể kết nối đến máy chủ Tiểu Hồng Thư (Hết thời gian chờ / Timeout mạng)"
+            return False, "", "", "Bài viết trên Tiểu Hồng Thư (XHS) này không tồn tại, đã bị xóa hoặc link bị sai ký tự (Lưu ý chữ 'I' hoa và 'l' thường)"
 
         real_url = res.url
-        
-        # 1. Kiểm tra nếu link đã bị xóa / hết hạn (XHS tự động chuyển hướng về trang chủ hoặc /explore)
-        clean_real = real_url.rstrip('/').lower()
+        clean_real = real_url.split('?')[0].rstrip('/').lower()
         if clean_real in ["https://www.xiaohongshu.com", "http://www.xiaohongshu.com", "https://xiaohongshu.com", 
                           "https://www.xiaohongshu.com/explore", "http://www.xiaohongshu.com/explore",
                           "https://www.xiaohongshu.com/discovery", "http://www.xiaohongshu.com/discovery"]:

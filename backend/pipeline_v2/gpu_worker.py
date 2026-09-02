@@ -12,9 +12,18 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
+import io
+if isinstance(sys.stdout, io.TextIOWrapper):
+    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+if isinstance(sys.stderr, io.TextIOWrapper):
+    try: sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception: pass
+
 from .atomic_io import atomic_write_json
 from .batching import chunked
 from .segments import segments_from_dicts, segments_to_dicts
+from .stage_validation import validate_demucs_outputs, validate_transformed_audio
 
 
 def _prepare_legacy_imports() -> None:
@@ -37,8 +46,7 @@ def _run_demucs(payload: Mapping[str, Any]) -> Dict[str, Any]:
         segment_seconds=float(payload.get("segment_seconds", 6.0)),
         timeout_seconds=float(payload.get("timeout_seconds", 3600.0)),
     )
-    if not Path(vocals).is_file() or not Path(background).is_file():
-        raise RuntimeError("Demucs did not produce both requested stems")
+    validate_demucs_outputs(payload["input_audio"], vocals, background)
     return {"vocals_path": vocals, "background_path": background}
 
 
@@ -100,9 +108,13 @@ async def _rvc_batch(payload: Mapping[str, Any]) -> Dict[str, Any]:
     for item in payload.get("items", []):
         input_path = str(item["input_path"])
         output_path = str(item["output_path"])
-        await apply_rvc_clone(input_path, output_path, model_path)
-        if not Path(output_path).is_file():
-            raise RuntimeError("RVC output is missing: {}".format(output_path))
+        await apply_rvc_clone(
+            input_path,
+            output_path,
+            model_path,
+            strict=True,
+        )
+        validate_transformed_audio(input_path, output_path, "RVC")
         completed.append(
             {"index": int(item["index"]), "output_path": output_path}
         )

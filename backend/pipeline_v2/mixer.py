@@ -6,6 +6,7 @@ import math
 import os
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple, Union
@@ -35,8 +36,10 @@ class FFmpegMixSettings:
             raise ValueError("duck_ratio must be at least 1")
         if self.true_peak_dbtp > 0:
             raise ValueError("true_peak_dbtp must not exceed 0")
-        if self.voice_chunk_seconds <= 0 or self.max_inputs_per_pass <= 0:
-            raise ValueError("Mixer resource limits must be positive")
+        if self.voice_chunk_seconds <= 0:
+            raise ValueError("voice_chunk_seconds must be positive")
+        if self.max_inputs_per_pass < 2:
+            raise ValueError("max_inputs_per_pass must be at least 2")
 
 
 @dataclass(frozen=True)
@@ -57,13 +60,24 @@ def _validated_dubs(dubbing_audio_files: Iterable[Mapping[str, Any]]) -> List[Di
     valid = []
     for item in dubbing_audio_files:
         path = Path(str(item.get("path", "")))
-        if not path.is_file():
-            continue
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise FileNotFoundError("Dubbing audio is missing or empty: {}".format(path))
         start = float(item.get("start", 0.0))
-        if start < 0:
-            raise ValueError("Dubbing start time must not be negative")
+        if not math.isfinite(start) or start < 0:
+            raise ValueError("Dubbing start time must be finite and non-negative")
+        if item.get("end") is not None:
+            end = float(item["end"])
+            if not math.isfinite(end) or end <= start:
+                raise ValueError("Dubbing end time must be finite and after start")
         valid.append({**dict(item), "path": str(path), "start": start})
     return sorted(valid, key=lambda item: (item["start"], int(item.get("index", 0))))
+
+
+def _remaining_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("FFmpeg mixer exceeded its total timeout")
+    return remaining
 
 
 def plan_voice_chunks(
@@ -114,7 +128,11 @@ def plan_voice_chunks(
     return chunks
 
 
-def _probe_duration(path: PathLike, ffprobe_binary: str = "ffprobe") -> float:
+def _probe_duration(
+    path: PathLike,
+    ffprobe_binary: str = "ffprobe",
+    timeout_seconds: float = 60.0,
+) -> float:
     creation_flags = (
         subprocess.CREATE_NO_WINDOW
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW")
@@ -135,7 +153,7 @@ def _probe_duration(path: PathLike, ffprobe_binary: str = "ffprobe") -> float:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=60,
+        timeout=timeout_seconds,
         creationflags=creation_flags,
     )
     if result.returncode != 0:
@@ -187,8 +205,9 @@ def _render_voice_group(
     if labels:
         filters.append(
             "{}amix=inputs={}:duration=longest:normalize=0,"
-            "apad,atrim=duration={:.6f},aformat=sample_rates=44100:channel_layouts=stereo[out]".format(
-                "".join(labels), len(labels), chunk_duration
+            "apad=whole_dur={:.6f},atrim=start=0:end={:.6f},"
+            "asetpts=N/SR/TB,aformat=sample_rates=44100:channel_layouts=stereo[out]".format(
+                "".join(labels), len(labels), chunk_duration, chunk_duration
             )
         )
         command.extend(["-filter_complex", ";".join(filters), "-map", "[out]"])
@@ -203,7 +222,11 @@ def _render_voice_group(
                 "0:a",
             ]
         )
-    command.extend(["-c:a", "flac", str(output_path)])
+    # Bound both the filter graph and the output. An unbounded apad source can
+    # otherwise keep grouped/scalable FFmpeg passes alive forever.
+    command.extend(
+        ["-t", "{:.6f}".format(chunk_duration), "-c:a", "flac", str(output_path)]
+    )
     _run_ffmpeg(command, timeout_seconds)
 
 
@@ -212,8 +235,10 @@ def _mix_voice_tracks(
     output_path: Path,
     max_inputs: int,
     ffmpeg_binary: str,
-    timeout_seconds: float,
+    deadline: float,
 ) -> None:
+    if max_inputs < 2:
+        raise ValueError("max_inputs must be at least 2")
     current = list(inputs)
     generation = 0
     while len(current) > 1:
@@ -233,7 +258,7 @@ def _mix_voice_tracks(
             command.extend(
                 ["-filter_complex", graph, "-map", "[out]", "-c:a", "flac", str(target)]
             )
-            _run_ffmpeg(command, timeout_seconds)
+            _run_ffmpeg(command, _remaining_timeout(deadline))
             next_generation.append(target)
         current = next_generation
         generation += 1
@@ -247,7 +272,7 @@ def _render_scalable_voice_bus(
     directory: Path,
     settings: FFmpegMixSettings,
     ffmpeg_binary: str,
-    timeout_seconds: float,
+    deadline: float,
 ) -> Path:
     chunk_paths = []
     for chunk_index, chunk in enumerate(
@@ -270,7 +295,7 @@ def _render_scalable_voice_bus(
                 group_path,
                 settings,
                 ffmpeg_binary,
-                timeout_seconds,
+                _remaining_timeout(deadline),
             )
             group_paths.append(group_path)
         chunk_path = directory / "chunk-{}.flac".format(chunk_index)
@@ -282,7 +307,7 @@ def _render_scalable_voice_bus(
                 chunk_path,
                 settings.max_inputs_per_pass,
                 ffmpeg_binary,
-                timeout_seconds,
+                deadline,
             )
         chunk_paths.append(chunk_path)
 
@@ -311,7 +336,7 @@ def _render_scalable_voice_bus(
         "flac",
         str(voice_bus),
     ]
-    _run_ffmpeg(command, timeout_seconds)
+    _run_ffmpeg(command, _remaining_timeout(deadline))
     return voice_bus
 
 
@@ -421,8 +446,25 @@ def mix_audio_ffmpeg(
     dubs = _validated_dubs(dubbing_audio_files)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    background_duration = _probe_duration(background_audio)
-    effective_timeout = max(timeout_seconds, background_duration * 4.0 + 300.0)
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    # Treat the public timeout as an upper bound. Previously it was silently
+    # raised to at least five minutes, hiding deadlocks and defeating callers
+    # that deliberately requested a short failure window.
+    effective_timeout = float(timeout_seconds)
+    deadline = time.monotonic() + effective_timeout
+    background_duration = _probe_duration(
+        background_audio,
+        "ffprobe",
+        _remaining_timeout(deadline),
+    )
+    for dub in dubs:
+        if dub["start"] >= background_duration:
+            raise ValueError(
+                "Dubbing segment {} starts outside the background timeline".format(
+                    dub.get("index", "unknown")
+                )
+            )
     if len(dubs) <= config.max_inputs_per_pass:
         command, dub_count = build_ffmpeg_mix_command(
             background_audio,
@@ -431,7 +473,7 @@ def mix_audio_ffmpeg(
             settings=config,
             ffmpeg_binary=ffmpeg_binary,
         )
-        _run_ffmpeg(command, effective_timeout)
+        _run_ffmpeg(command, _remaining_timeout(deadline))
     else:
         with tempfile.TemporaryDirectory(
             prefix="voice-bus-", dir=str(output.parent)
@@ -442,7 +484,7 @@ def mix_audio_ffmpeg(
                 Path(temporary_directory),
                 config,
                 ffmpeg_binary,
-                effective_timeout,
+                deadline,
             )
             command, _ = build_ffmpeg_mix_command(
                 background_audio,
@@ -451,7 +493,7 @@ def mix_audio_ffmpeg(
                 settings=config,
                 ffmpeg_binary=ffmpeg_binary,
             )
-            _run_ffmpeg(command, effective_timeout)
+            _run_ffmpeg(command, _remaining_timeout(deadline))
             dub_count = len(dubs)
     if not output.is_file() or output.stat().st_size == 0:
         raise RuntimeError("FFmpeg mix failed")

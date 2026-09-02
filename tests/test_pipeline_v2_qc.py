@@ -38,7 +38,39 @@ class SegmentQcTests(unittest.TestCase):
             metrics, checks = _check_segments(path)
             self.assertEqual(metrics["missing_ids"], [2])
             self.assertEqual(metrics["missing_audio_count"], 1)
-            self.assertEqual(checks[0].status, "warning")
+            self.assertEqual(checks[0].status, "error")
+
+    def test_measured_timing_and_source_language_failures_are_blocking_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = Path(directory) / "voice.wav"
+            audio.write_bytes(b"voice")
+            path = Path(directory) / "segments.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "segments": [
+                            {
+                                "index": 1,
+                                "start": 0.0,
+                                "end": 1.0,
+                                "content": "你好",
+                                "orig_content": "你好",
+                                "audio_path": str(audio),
+                                "actual_audio_duration": 1.4,
+                                "target_audio_duration": 1.0,
+                                "timing_fits": False,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            metrics, checks = _check_segments(path)
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(metrics["timing_failure_ids"], [1])
+            self.assertEqual(by_name["segment_timing"].status, "error")
+            self.assertEqual(by_name["translation_fallback"].status, "error")
 
 
 class SubtitleQcTests(unittest.TestCase):

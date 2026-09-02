@@ -82,14 +82,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for i, seg in enumerate(processed_segments):
             start_time = seg.start
             end_time = seg.end
-            
-            # Khắc phục hiện tượng nháy chữ: Nối liền các sub nếu khoảng cách giữa chúng rất nhỏ (<= 1.0s)
-            if i < len(processed_segments) - 1:
-                next_start = processed_segments[i+1].start
-                gap = (next_start - end_time).total_seconds()
-                if 0 < gap <= 1.0:
-                    end_time = next_start
-                    
             start_str = format_time(start_time)
             end_str = format_time(end_time)
             text = str(seg.content).replace('\n', ' ').strip()

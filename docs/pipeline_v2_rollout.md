@@ -18,6 +18,21 @@ PIPELINE_MODE=legacy
 Restart the bot only when its queue is empty. Never change modes while Demucs,
 Whisper, EasyOCR, RVC or FFmpeg is active.
 
+## Preflight bắt buộc
+
+Tạo `backend/.env` từ `backend/.env.example`, điền secret thật và đặt workspace
+ngoài OneDrive/thư mục đồng bộ đám mây. Sau đó chạy bằng đúng Python trong venv:
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe -m pipeline_v2.preflight --project-root .. --interface all
+```
+
+Chỉ bắt đầu video thật khi dòng cuối báo `ready=True`, `pipeline:config` là `v2`
+và không còn mục `error`. Warning về RVC có thể chấp nhận nếu chỉ dùng Edge/FPT;
+warning CUDA nghĩa là pipeline có thể chạy CPU nhưng không phù hợp video dài.
+Wildcard CORS bị preflight chặn vì API nhận đường dẫn file cục bộ.
+
 ## Recommended rollout
 
 Start with shadow mode:
@@ -53,6 +68,11 @@ ENABLE_ADAPTIVE_OCR=true
 ENABLE_TIMING_SOLVER=true
 ENABLE_FFMPEG_MIX_V2=true
 ```
+
+API desktop xử lý tuần tự để hai request không tranh VRAM/FFmpeg hoặc ghi đè
+workspace cùng lúc. Electron dùng preload bridge cô lập; React không có quyền
+Node trực tiếp. Các origin API mặc định chỉ gồm UI localhost và origin `null`
+của bản Electron đóng gói; không cấu hình `AUTODUB_CORS_ORIGINS=*`.
 
 When FFmpeg mix v2 is enabled, Pydub A/B output stays off by default to avoid
 loading long PCM audio into RAM twice. Set `ENABLE_LEGACY_MIX_AB=true` only for
@@ -98,6 +118,13 @@ The GPU lock is shared by Demucs, Whisper, EasyOCR and RVC. Each heavyweight
 stage runs in its own Python process, and operating-system lock release protects
 against worker crashes.
 
+Pipeline v2 dùng fail-closed cho các artifact tạo nội dung: Demucs/RVC giả hoặc
+Git LFS pointer, bản dịch CJK không đổi, batch OCR/Translation rỗng và FPT hết
+quota đều làm stage thất bại thay vì âm thầm xuất media sai. Resume giữ nguyên
+nguồn giọng đã ghi trong manifest; job RVC thiếu model sẽ dừng để người vận hành
+khôi phục đúng model. Callback Telegram/UI lỗi chỉ được ghi warning (giữ tối đa
+50 bản gần nhất) và không làm hỏng media job.
+
 ## Duration-independent resource limits
 
 Pipeline v2 does not use a separate long-video mode or change the render steps.
@@ -129,6 +156,22 @@ MIXER_MAX_INPUTS_PER_PASS=64
 
 These limits control peak resources, not video duration. They may be tuned for
 the machine without changing stage order or output behavior.
+
+## Checklist trước khi chuyển sang hoạt động
+
+1. Preflight `ready=True` bằng chính venv sẽ chạy bot/API.
+2. Chạy một video 30–90 giây ở `QC_GATE_POLICY=report_only`; mở và nghe file cuối,
+   kiểm tra `qc/qc_report.json` và `job_manifest.json`.
+3. Dừng giữa TTS hoặc RVC rồi khởi động lại để xác nhận resume không đổi giọng và
+   không chạy lại các stage đã có SHA-256 hợp lệ.
+4. Chạy lần lượt Edge, FPT (nếu dùng) và RVC (nếu dùng); không coi một provider
+   đã qua là bằng chứng cho provider khác.
+5. Chạy một video dài đại diện với cấu hình batch thật và theo dõi VRAM, dung
+   lượng workspace, thời gian mixer/render.
+6. Sau khi ma trận video thật sạch, chuyển `QC_GATE_POLICY=warn`, rồi `block`.
+
+Không đánh dấu production-ready chỉ từ unit test: Demucs, dịch/TTS cloud, RVC và
+NVENC cần ít nhất một lượt end-to-end với model, API key và driver của máy chạy.
 
 ## Rollback
 

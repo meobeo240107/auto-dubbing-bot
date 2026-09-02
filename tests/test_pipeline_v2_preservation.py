@@ -35,6 +35,12 @@ class LegacyPatchPreservationTests(unittest.TestCase):
         self.assertIn("await asyncio.sleep", body)
         self.assertEqual(source.count(".edit_text("), 1)
 
+    def test_placeholder_secrets_are_not_treated_as_credentials(self):
+        source = (ROOT / "backend" / "telegram_bot.py").read_text(encoding="utf-8")
+        self.assertIn("def configured_secret", source)
+        self.assertIn('value.upper().startswith(("YOUR_", "PASTE_"))', source)
+        self.assertIn("if not BOT_TOKEN:", source)
+
     def test_gemini_keeps_inline_video_frame_context(self):
         source = (ROOT / "backend" / "ai" / "translation.py").read_text(
             encoding="utf-8"
@@ -54,6 +60,20 @@ class LegacyPatchPreservationTests(unittest.TestCase):
         self.assertIn('"num_workers": 1', pipeline)
         self.assertIn('payload.get("segment_seconds", 6.0)', worker)
         self.assertIn('payload.get("num_workers", 1)', worker)
+
+    def test_fastapi_processing_routes_share_v2_runner(self):
+        source = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+        self.assertIn("async def run_api_pipeline_v2", source)
+        self.assertEqual(source.count("await run_api_pipeline_v2("), 2)
+        self.assertIn('"pipeline": "v2"', source)
+        self.assertEqual(source.count("await API_PROCESS_LOCK.acquire()"), 2)
+        self.assertEqual(source.count("API_PROCESS_LOCK.release()"), 2)
+        self.assertIn("time.time_ns()", source)
+        self.assertIn(
+            'tts_api_key=(api_key if voice_source == "fpt" else "")', source
+        )
+        self.assertNotIn('allow_origins=["*"]', source)
+        self.assertIn("AUTODUB_CORS_ORIGINS", source)
 
 
 if __name__ == "__main__":

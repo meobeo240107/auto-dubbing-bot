@@ -8,6 +8,7 @@ from backend.pipeline_v2.segments import RuntimeSegment
 from backend.pipeline_v2.timing import (
     TimingPolicy,
     fit_audio_to_window,
+    plan_actual_timing_rewrites,
     plan_segment,
     solve_segment_timing,
 )
@@ -55,6 +56,28 @@ class TimingSolverTests(unittest.TestCase):
             content="Một câu vừa đủ",
         )
         self.assertLessEqual(plan_segment(segment).required_atempo, 1.08)
+
+    def test_measured_duration_creates_a_smaller_second_pass_budget(self):
+        segment = RuntimeSegment(
+            index=3,
+            start=timedelta(seconds=0),
+            end=timedelta(seconds=1),
+            content="Một câu lồng tiếng thực tế đang bị dài",
+            source_segment_id=9,
+        )
+        requests = plan_actual_timing_rewrites(
+            [segment],
+            [
+                {
+                    "index": 3,
+                    "actual_audio_duration": 1.5,
+                    "timing_fits": False,
+                }
+            ],
+        )
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].source_segment_id, 9)
+        self.assertLess(requests[0].max_characters, len(segment.content.replace(" ", "")))
 
 
 class AudioFitIntegrationTests(unittest.TestCase):

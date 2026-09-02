@@ -25,8 +25,8 @@ def _creation_flags() -> int:
 
 @dataclass(frozen=True)
 class TimingPolicy:
-    atempo_min: float = 0.92
-    atempo_max: float = 1.40
+    atempo_min: float = 0.75
+    atempo_max: float = 1.45
     estimated_chars_per_second: float = 11.5
     min_segment_seconds: float = 0.35
     max_rewrite_rounds: int = 2
@@ -59,6 +59,46 @@ class RewriteRequest:
     text: str
     target_seconds: float
     max_characters: int
+
+
+def plan_actual_timing_rewrites(
+    segments: Iterable[Any],
+    audio_infos: Iterable[Mapping[str, Any]],
+    safety_margin: float = 0.95,
+) -> List[RewriteRequest]:
+    """Create rewrite requests from measured TTS/RVC durations, not estimates."""
+
+    if not 0.5 <= safety_margin <= 1.0:
+        raise ValueError("safety_margin must be between 0.5 and 1.0")
+    by_index = {int(info["index"]): dict(info) for info in audio_infos}
+    requests = []
+    for segment in segments:
+        info = by_index.get(int(segment.index))
+        if not info:
+            continue
+        target = max((segment.end - segment.start).total_seconds(), 0.1)
+        actual = float(info.get("actual_audio_duration", 0.0) or 0.0)
+        fits = bool(info.get("timing_fits", actual <= target + 0.08))
+        if fits and actual <= target + 0.08:
+            continue
+        characters = max(normalized_character_count(str(segment.content)), 1)
+        if actual > 0:
+            budget = int(math.floor(characters * target / actual * safety_margin))
+        else:
+            budget = characters - 1
+        budget = max(1, min(budget, max(characters - 1, 1)))
+        requests.append(
+            RewriteRequest(
+                segment_index=int(segment.index),
+                source_segment_id=int(
+                    getattr(segment, "source_segment_id", None) or segment.index
+                ),
+                text=str(segment.content),
+                target_seconds=target,
+                max_characters=budget,
+            )
+        )
+    return requests
 
 
 @dataclass
@@ -341,8 +381,8 @@ def fit_audio_to_window(
     required = source_duration / target_seconds
     if required > 1.0:
         applied = min(required, config.atempo_max)
-    elif config.atempo_min <= required < 1.0:
-        applied = required
+    elif required < 1.0:
+        applied = max(required, config.atempo_min)
     else:
         applied = 1.0
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path)]
