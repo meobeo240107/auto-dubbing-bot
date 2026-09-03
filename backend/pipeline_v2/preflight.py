@@ -101,6 +101,38 @@ def _module_checks(names: Iterable[str]) -> List[PreflightCheck]:
     return checks
 
 
+def _dependency_check() -> PreflightCheck:
+    """Fail readiness when the active Python environment is inconsistent."""
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "check"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW
+                if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW")
+                else 0
+            ),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return PreflightCheck("python:dependencies", "error", str(exc))
+
+    detail = "\n".join(
+        part.strip() for part in (result.stdout, result.stderr) if part.strip()
+    )
+    invalid_distribution = "invalid distribution" in detail.lower()
+    healthy = result.returncode == 0 and not invalid_distribution
+    return PreflightCheck(
+        "python:dependencies",
+        "pass" if healthy else "error",
+        "No broken requirements found" if healthy else detail[-3000:],
+    )
+
+
 def _command_check(name: str) -> PreflightCheck:
     path = shutil.which(name)
     return PreflightCheck(
@@ -292,6 +324,7 @@ def run_preflight(
     for selected in interfaces:
         modules.extend(INTERFACE_MODULES[selected])
     checks.extend(_module_checks(modules))
+    checks.append(_dependency_check())
     checks.extend((_command_check("ffmpeg"), _command_check("ffprobe")))
     checks.append(_nvenc_check())
     checks.append(_cuda_check())
@@ -398,4 +431,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

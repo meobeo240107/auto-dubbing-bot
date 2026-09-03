@@ -750,9 +750,6 @@ class VideoPipelineRunner:
                     enrich_segments_with_gender, runtime_segs, speech
                 )
                 segment_payload = segments_to_dicts(enriched_segs)
-            else:
-                for item in segment_payload:
-                    item["gender"] = "female"
             return [
                 self.artifact_store.put_file("transcript/original.srt", srt_path),
                 self.artifact_store.put_json(

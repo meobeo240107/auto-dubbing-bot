@@ -18,7 +18,8 @@ class ModelPolicyTests(unittest.TestCase):
         self.assertEqual(policy.qwen_asr_model, "Qwen/Qwen3-ASR-0.6B")
         self.assertEqual(policy.qwen_aligner_model, "Qwen/Qwen3-ForcedAligner-0.6B")
         self.assertEqual(policy.paddle_ocr_version, "PP-OCRv6")
-        self.assertEqual(policy.gemini_model, "gemini-3.7-flash")
+        self.assertEqual(policy.gemini_model, "gemini-3.8-flash")
+        self.assertEqual(policy.gemini_candidates[0], "gemini-3.8-flash")
         self.assertIn("gemini-3.7-flash", policy.gemini_candidates)
         self.assertNotIn("deepseek-v4", policy.deepseek_candidates)
 

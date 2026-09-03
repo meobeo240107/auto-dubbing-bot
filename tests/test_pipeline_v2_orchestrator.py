@@ -14,11 +14,17 @@ from backend.pipeline_v2.stage_status import StageStatus
 
 
 class PipelineSettingsTests(unittest.TestCase):
-    def test_legacy_is_the_default(self):
+    def test_v2_is_the_default_for_the_v2_release_branch(self):
         settings = PipelineSettings.from_env({})
-        self.assertEqual(settings.mode, PipelineMode.LEGACY)
+        self.assertEqual(settings.mode, PipelineMode.V2)
         self.assertFalse(settings.enable_stage_cache)
         self.assertTrue(settings.preserve_source_resolution)
+        self.assertTrue(settings.enable_auto_gender)
+        self.assertTrue(settings.enable_timing_solver)
+
+    def test_auto_gender_can_be_disabled_explicitly(self):
+        settings = PipelineSettings.from_env({"ENABLE_AUTO_GENDER": "false"})
+        self.assertFalse(settings.enable_auto_gender)
 
     def test_rejects_unsafe_atempo_bounds(self):
         with self.assertRaises(ValueError):
@@ -89,5 +95,3 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

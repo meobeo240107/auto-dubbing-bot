@@ -14,7 +14,7 @@ import json
 import requests
 import base64
 import re
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 import logging
 
 from .model_policy import current_model_policy, ordered_unique
@@ -24,6 +24,62 @@ logger = logging.getLogger(__name__)
 
 def _contains_cjk(text):
     return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
+
+def _is_translation_error_payload(value):
+    text = str(value or "").strip()
+    lowered = text.lower()
+    return (
+        not text
+        or lowered.startswith("error")
+        or "error 500" in lowered
+        or "server error" in lowered
+    )
+
+
+def _validate_fallback_translation(source_text, translated_text, provider):
+    if _is_translation_error_payload(translated_text):
+        raise RuntimeError(
+            "{} returned an error payload: {}".format(
+                provider, str(translated_text or "")[:120]
+            )
+        )
+    translated = str(translated_text).strip()
+    if _contains_cjk(source_text) and translated == str(source_text).strip():
+        raise RuntimeError("{} left Chinese source text untranslated".format(provider))
+    return translated
+
+
+def _translate_with_resilient_fallback(source_text, target_lang):
+    """Translate one segment without accepting provider error pages as text."""
+
+    source_text = str(source_text)
+    failures = []
+    google_sources = ("zh-CN", "auto") if _contains_cjk(source_text) else ("auto",)
+    for source_lang in google_sources:
+        try:
+            translated = GoogleTranslator(
+                source=source_lang, target=target_lang
+            ).translate(source_text)
+            return _validate_fallback_translation(
+                source_text, translated, "Google Translate ({})".format(source_lang)
+            )
+        except Exception as exc:
+            failures.append("Google {}: {}".format(source_lang, exc))
+
+    memory_source = "zh-CN" if _contains_cjk(source_text) else "auto"
+    memory_target = "vi-VN" if target_lang.lower().startswith("vi") else target_lang
+    try:
+        translated = MyMemoryTranslator(
+            source=memory_source, target=memory_target
+        ).translate(source_text)
+        return _validate_fallback_translation(
+            source_text, translated, "MyMemory Translate"
+        )
+    except Exception as exc:
+        failures.append("MyMemory: {}".format(exc))
+
+    raise RuntimeError("; ".join(failures[-3:]))
 
 def build_translation_prompt(texts, target_lang="vi", prior_context=None, with_vision=True):
     lang_name = "Tiếng Việt" if target_lang == "vi" else target_lang
@@ -408,52 +464,9 @@ def translate_subtitles(
             
         try:
             segment.orig_content = segment.content
-            # Dùng zh-CN trực tiếp nếu là tiếng Trung để tránh lỗi Error 500 do endpoint mobile auto-detect của Google
-            src_lang = 'zh-CN' if _contains_cjk(segment.content) else 'auto'
-            translator = GoogleTranslator(source=src_lang, target=target_lang)
-            try:
-                translated_text = translator.translate(segment.content)
-            except Exception as tr_err:
-                from deep_translator.exceptions import TranslationNotFound
-                if isinstance(tr_err, TranslationNotFound):
-                    try:
-                        from deep_translator import MyMemoryTranslator
-                        mm_target = "vi-VN" if target_lang.lower().startswith("vi") else target_lang
-                        translated_text = MyMemoryTranslator(source="zh-CN", target=mm_target).translate(segment.content)
-                    except Exception:
-                        raise tr_err
-                else:
-                    raise tr_err
-
-            if (
-                not translated_text
-                or "Error 500" in translated_text
-                or "Server Error" in translated_text
-                or translated_text.startswith("Error")
-            ):
-                if src_lang == 'zh-CN':
-                    try:
-                        alt_trans = GoogleTranslator(source='auto', target=target_lang)
-                        alt_text = alt_trans.translate(segment.content)
-                        if alt_text and not ("Error 500" in alt_text or "Server Error" in alt_text or alt_text.startswith("Error")):
-                            translated_text = alt_text
-                    except Exception:
-                        pass
-
-            if not isinstance(translated_text, str) or not translated_text.strip():
-                raise RuntimeError("Google Translate returned an empty result")
-            if (
-                "Error 500" in translated_text
-                or "Server Error" in translated_text
-                or translated_text.startswith("Error")
-            ):
-                raise RuntimeError(
-                    "Google Translate returned an error payload: {}".format(
-                        translated_text[:120]
-                    )
-                )
-            if translated_text == segment.content and _contains_cjk(segment.content):
-                raise RuntimeError("Chinese source text remained untranslated")
+            translated_text = _translate_with_resilient_fallback(
+                segment.content, target_lang
+            )
                 
         except Exception as e:
             logger.warning(f"Lỗi dịch thuật: {e}")
@@ -470,4 +483,3 @@ def translate_subtitles(
         )
 
     return srt_segments
-

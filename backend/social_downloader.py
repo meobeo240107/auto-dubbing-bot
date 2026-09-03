@@ -6,6 +6,7 @@ import requests
 import subprocess
 import sys
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     from .pipeline_v2.atomic_io import atomic_replace_file
@@ -321,11 +322,23 @@ def download_xiaohongshu(url: str, output_dir: str, prefix: str) -> tuple:
 
         if res is None:
             return False, "", "", "Không thể kết nối đến máy chủ Tiểu Hồng Thư (Hết thời gian chờ / Timeout mạng)"
+        if res.status_code != 200:
+            return (
+                False,
+                "",
+                "",
+                "Máy chủ Tiểu Hồng Thư trả về HTTP {} sau 2 lần thử".format(
+                    res.status_code
+                ),
+            )
 
         real_url = res.url
         
         # 1. Kiểm tra nếu link đã bị xóa / hết hạn (XHS tự động chuyển hướng về trang chủ hoặc /explore)
-        clean_real = real_url.rstrip('/').lower()
+        parsed_real = urlsplit(real_url)
+        clean_real = urlunsplit(
+            (parsed_real.scheme, parsed_real.netloc, parsed_real.path, "", "")
+        ).rstrip('/').lower()
         if clean_real in ["https://www.xiaohongshu.com", "http://www.xiaohongshu.com", "https://xiaohongshu.com", 
                           "https://www.xiaohongshu.com/explore", "http://www.xiaohongshu.com/explore",
                           "https://www.xiaohongshu.com/discovery", "http://www.xiaohongshu.com/discovery"]:

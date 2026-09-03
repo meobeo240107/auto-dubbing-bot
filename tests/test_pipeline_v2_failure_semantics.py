@@ -105,7 +105,15 @@ class TranslationFailureTests(unittest.TestCase):
             def translate(self, text):
                 raise RuntimeError("offline")
 
+        class FailingMyMemoryTranslator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def translate(self, text):
+                raise RuntimeError("offline")
+
         deep_module.GoogleTranslator = FailingGoogleTranslator
+        deep_module.MyMemoryTranslator = FailingMyMemoryTranslator
         sys.modules.pop("backend.ai.translation", None)
         with mock.patch.dict(
             sys.modules,
@@ -147,6 +155,34 @@ class TranslationFailureTests(unittest.TestCase):
         ):
             result = translation.translate_subtitles(
                 [segment], api_key="key", strict=True, enable_g4f=False
+            )
+        self.assertEqual(result[0].content, "Xin chào")
+
+    def test_google_error_payload_falls_back_to_mymemory(self):
+        translation = self._load_translation_with_failing_google()
+
+        class ErrorPayloadGoogleTranslator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def translate(self, text):
+                return "Error 500 (Server Error)"
+
+        class WorkingMyMemoryTranslator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def translate(self, text):
+                return "Xin chào"
+
+        segment = SimpleNamespace(index=23, content="你好")
+        with mock.patch.object(
+            translation, "GoogleTranslator", ErrorPayloadGoogleTranslator
+        ), mock.patch.object(
+            translation, "MyMemoryTranslator", WorkingMyMemoryTranslator
+        ):
+            result = translation.translate_subtitles(
+                [segment], strict=True, enable_g4f=False
             )
         self.assertEqual(result[0].content, "Xin chào")
 

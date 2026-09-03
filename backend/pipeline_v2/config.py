@@ -48,7 +48,7 @@ def _env_int(environment: Mapping[str, str], name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class PipelineSettings:
-    mode: PipelineMode = PipelineMode.LEGACY
+    mode: PipelineMode = PipelineMode.V2
     enable_stage_cache: bool = False
     enable_parallel_ocr_gemini: bool = False
     enable_adaptive_demucs: bool = False
@@ -59,7 +59,7 @@ class PipelineSettings:
     enable_ffmpeg_mix_v2: bool = False
     enable_legacy_mix_ab: bool = False
     enable_rvc: bool = True
-    enable_auto_gender: bool = False
+    enable_auto_gender: bool = True
     atempo_min: float = 0.92
     atempo_max: float = 1.40
     target_lufs: float = -15.0
@@ -104,7 +104,7 @@ class PipelineSettings:
         cls, environment: Optional[Mapping[str, str]] = None
     ) -> "PipelineSettings":
         env = environment if environment is not None else os.environ
-        mode_value = env.get("PIPELINE_MODE", PipelineMode.LEGACY.value).strip().lower()
+        mode_value = env.get("PIPELINE_MODE", PipelineMode.V2.value).strip().lower()
         qc_value = env.get(
             "QC_GATE_POLICY", QCGatePolicy.REPORT_ONLY.value
         ).strip().lower()
@@ -136,7 +136,7 @@ class PipelineSettings:
             enable_ffmpeg_mix_v2=_env_bool(env, "ENABLE_FFMPEG_MIX_V2", False),
             enable_legacy_mix_ab=_env_bool(env, "ENABLE_LEGACY_MIX_AB", False),
             enable_rvc=_env_bool(env, "ENABLE_RVC", True),
-            enable_auto_gender=_env_bool(env, "ENABLE_AUTO_GENDER", False),
+            enable_auto_gender=_env_bool(env, "ENABLE_AUTO_GENDER", True),
             atempo_min=_env_float(env, "ATEMPO_MIN", 0.92),
             atempo_max=_env_float(env, "ATEMPO_MAX", 1.40),
             target_lufs=_env_float(env, "TARGET_LUFS", -15.0),
@@ -170,5 +170,3 @@ class PipelineSettings:
         payload.pop("gpu_lock_timeout_seconds", None)
         payload.pop("stage_timeout_seconds", None)
         return payload
-
-

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from .gpu_lock import InterProcessGPULock
 
 
 PathLike = Union[str, os.PathLike]
+logger = logging.getLogger(__name__)
 
 
 class GPUStageError(RuntimeError):
@@ -105,6 +107,13 @@ class GPUStageExecutor:
                 raise GPUStageError(
                     "GPU stage {!r} failed: {}".format(stage, detail or "unknown error")
                 )
+            if result.stdout.strip():
+                logger.info(
+                    "GPU stage %s output:\n%s", stage, result.stdout.strip()[-4000:]
+                )
+            if result.stderr.strip():
+                logger.warning(
+                    "GPU stage %s diagnostics:\n%s", stage, result.stderr.strip()[-4000:]
+                )
             return dict(response.get("result", {}))
-
 

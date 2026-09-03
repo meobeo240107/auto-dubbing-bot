@@ -84,8 +84,43 @@ class DownloadProbeTests(unittest.TestCase):
         for name in ("qn", "ws", "ct", "bd", "qc", "hw", "al"):
             self.assertIn("sns-video-{}".format(name), hosts)
 
+    def test_xhs_rejects_non_200_response_before_parsing(self):
+        from backend import social_downloader
+
+        response = SimpleNamespace(
+            status_code=403,
+            url="https://www.xiaohongshu.com/explore/item",
+            text="forbidden",
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            social_downloader.requests, "get", return_value=response
+        ):
+            ok, path, title, error = social_downloader.download_xiaohongshu(
+                "https://xhslink.com/o/example", directory, "test"
+            )
+        self.assertFalse(ok)
+        self.assertEqual(path, "")
+        self.assertEqual(title, "")
+        self.assertIn("HTTP 403", error)
+
+    def test_xhs_deleted_redirect_ignores_query_string(self):
+        from backend import social_downloader
+
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://www.xiaohongshu.com/explore?app_platform=ios",
+            text="",
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            social_downloader.requests, "get", return_value=response
+        ):
+            ok, _, _, error = social_downloader.download_xiaohongshu(
+                "https://xhslink.com/o/example", directory, "test"
+            )
+        self.assertFalse(ok)
+        self.assertIn("không tồn tại", error)
+
 
 if __name__ == "__main__":
     unittest.main()
-
 

@@ -2,6 +2,7 @@
 backend/venv/
 backend/venv_old/
 backend/model_venv/
+backend/venv-invalid-distributions-*/
 models/
 venv/
 env/
