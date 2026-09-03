@@ -28,6 +28,20 @@ class TelegramBotProfileTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "expected @autodub_video_v2_bot"):
                 await telegram_bot.configure_bot_profile(SimpleNamespace(bot=bot))
 
+    async def test_transient_polling_error_is_handled_as_warning(self):
+        error = telegram_bot.NetworkError("temporary read failure")
+        with patch.object(telegram_bot.logger, "warning") as warning:
+            await telegram_bot.telegram_error_handler(
+                None,
+                SimpleNamespace(error=error),
+            )
+        warning.assert_called_once()
+
+    def test_polling_uses_dedicated_request_and_error_handler(self):
+        source = telegram_bot.Path(telegram_bot.__file__).read_text(encoding="utf-8")
+        self.assertIn(".get_updates_request(get_updates_request)", source)
+        self.assertIn("app.add_error_handler(telegram_error_handler)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

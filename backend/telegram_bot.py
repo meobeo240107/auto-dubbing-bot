@@ -25,6 +25,7 @@ if os.name == 'nt':
 
 import logging
 from telegram import BotCommand, Update
+from telegram.error import NetworkError
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Load .env local file
@@ -128,6 +129,19 @@ async def configure_bot_profile(application):
     except Exception as exc:
         # Profile metadata is useful but must not take the rendering bot offline.
         logger.warning("Could not update Telegram V2 profile: %s", exc)
+
+
+async def telegram_error_handler(update, context):
+    """Keep transient Telegram polling failures visible without noisy tracebacks."""
+
+    error = context.error
+    if isinstance(error, NetworkError):
+        logger.warning("Telegram network error; polling will retry: %s", error)
+        return
+    logger.error(
+        "Unhandled Telegram update error",
+        exc_info=(type(error), error, error.__traceback__),
+    )
 
 async def safe_edit_status(status_msg, text, parse_mode=None, retries=3):
     """
@@ -1265,10 +1279,18 @@ def main():
                 write_timeout=120,
                 pool_timeout=120,
             )
+            get_updates_request = HTTPXRequest(
+                connection_pool_size=8,
+                connect_timeout=30,
+                read_timeout=90,
+                write_timeout=30,
+                pool_timeout=30,
+            )
             app = (
                 Application.builder()
                 .token(BOT_TOKEN)
                 .request(request)
+                .get_updates_request(get_updates_request)
                 .post_init(configure_bot_profile)
                 .build()
             )
@@ -1282,9 +1304,16 @@ def main():
             app.add_handler(CommandHandler("llm", cmd_llm))
             app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            app.add_error_handler(telegram_error_handler)
 
             print("Bot da san sang! Dang lang nghe tin nhan...")
-            app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+                poll_interval=1.0,
+                timeout=30,
+                bootstrap_retries=-1,
+            )
         except Exception as e:
             logger.error(f"Lỗi polling hoặc mạng gián đoạn: {e}. Đang tự động kết nối lại sau 5 giây...")
             print(f"⚠️ Mang chập chờn hoặc loi: {e}. Dang tu dong ket noi lai sau 5 giay...")
