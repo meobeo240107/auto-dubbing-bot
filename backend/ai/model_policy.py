@@ -53,7 +53,7 @@ class RuntimeModelPolicy:
     ocr_backend: str = "auto"
     paddle_ocr_version: str = "PP-OCRv6"
     paddle_ocr_engine: str = "onnxruntime"
-    gemini_model: str = "gemini-3.6-flash"
+    gemini_model: str = "gemini-3.7-flash"
     openai_model: str = "gpt-5.6-sol"
     deepseek_model: str = "deepseek-v4-pro"
     model_runtime_python: str = ""
@@ -113,7 +113,7 @@ class RuntimeModelPolicy:
             paddle_ocr_engine=_clean(
                 env.get("PADDLE_OCR_ENGINE"), "onnxruntime"
             ),
-            gemini_model=_clean(env.get("GEMINI_MODEL"), "gemini-3.6-flash"),
+            gemini_model=_clean(env.get("GEMINI_MODEL"), "gemini-3.7-flash"),
             openai_model=_clean(env.get("OPENAI_MODEL"), "gpt-5.6-sol"),
             deepseek_model=_clean(
                 env.get("DEEPSEEK_MODEL"), "deepseek-v4-pro"
@@ -139,8 +139,9 @@ class RuntimeModelPolicy:
     def gemini_candidates(self) -> Tuple[str, ...]:
         return ordered_unique(
             self.gemini_model,
-            "gemini-flash-latest",
+            "gemini-3.7-flash",
             "gemini-3.6-flash",
+            "gemini-flash-latest",
             "gemini-3.5-flash",
             "gemini-flash-lite-latest",
             "gemini-3.5-flash-lite",
