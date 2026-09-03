@@ -24,7 +24,7 @@ if os.name == 'nt':
     subprocess.Popen.__init__ = patched_init
 
 import logging
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Load .env local file
@@ -47,6 +47,16 @@ def configured_secret(name):
 BOT_TOKEN = configured_secret("BOT_TOKEN")
 GEMINI_API_KEY = configured_secret("GEMINI_API_KEY")
 FPT_API_KEY = configured_secret("FPT_API_KEY")
+BOT_EXPECTED_USERNAME = os.getenv("BOT_EXPECTED_USERNAME", "").strip().lstrip("@")
+BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "AutoDub Video Bot V2").strip()
+BOT_SHORT_DESCRIPTION = os.getenv(
+    "BOT_SHORT_DESCRIPTION",
+    "Lồng tiếng video tự động bằng Pipeline V2.",
+).strip()
+BOT_DESCRIPTION = os.getenv(
+    "BOT_DESCRIPTION",
+    "Gửi link hoặc video để tải sạch, nhận dạng lời thoại, dịch, lồng tiếng, đồng bộ thời gian và kiểm tra chất lượng.",
+).strip()
 
 # Import các module xử lý từ backend
 sys.path.insert(0, os.path.dirname(__file__))
@@ -84,6 +94,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+BOT_COMMANDS = (
+    BotCommand("start", "Xem hướng dẫn sử dụng AutoDub V2"),
+    BotCommand("status", "Xem hàng đợi và tiến độ xử lý"),
+    BotCommand("batch", "Xử lý video trong thư mục đầu vào"),
+    BotCommand("local", "Chạy batch video cục bộ"),
+    BotCommand("llm", "Chọn nhà cung cấp AI dịch thuật"),
+    BotCommand("stop", "Dừng công việc đang xử lý"),
+)
+
+
+async def configure_bot_profile(application):
+    """Validate the dedicated V2 identity and publish its Telegram profile."""
+
+    bot = application.bot
+    identity = await bot.get_me()
+    actual_username = (identity.username or "").lstrip("@")
+    if BOT_EXPECTED_USERNAME and actual_username.lower() != BOT_EXPECTED_USERNAME.lower():
+        raise RuntimeError(
+            "BOT_TOKEN belongs to @{}, expected @{}".format(
+                actual_username or "unknown",
+                BOT_EXPECTED_USERNAME,
+            )
+        )
+
+    try:
+        await bot.set_my_commands(BOT_COMMANDS)
+        await bot.set_my_name(BOT_DISPLAY_NAME)
+        await bot.set_my_short_description(BOT_SHORT_DESCRIPTION)
+        await bot.set_my_description(BOT_DESCRIPTION)
+        logger.info("Telegram V2 profile configured for @%s", actual_username)
+    except Exception as exc:
+        # Profile metadata is useful but must not take the rendering bot offline.
+        logger.warning("Could not update Telegram V2 profile: %s", exc)
 
 async def safe_edit_status(status_msg, text, parse_mode=None, retries=3):
     """
@@ -1225,6 +1269,7 @@ def main():
                 Application.builder()
                 .token(BOT_TOKEN)
                 .request(request)
+                .post_init(configure_bot_profile)
                 .build()
             )
 
@@ -1248,4 +1293,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
