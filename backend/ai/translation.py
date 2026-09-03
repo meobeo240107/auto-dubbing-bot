@@ -104,10 +104,21 @@ def translate_with_gemini(
                     "data": b64
                 }
             })
-        if frames:
-            logger.info(f"Đã đính kèm {len(frames)} ảnh từ video vào Gemini Vision.")
-        
-        models_to_try = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+        preferred_gemini = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+        candidate_models = [
+            preferred_gemini,
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-flash-latest",
+            "gemini-3.5-flash",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash-lite",
+        ]
+        models_to_try = []
+        for m in candidate_models:
+            if m and m not in models_to_try:
+                models_to_try.append(m)
         response = None
         for model in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -409,12 +420,27 @@ def translate_subtitles(
             
         try:
             segment.orig_content = segment.content
-            translator = GoogleTranslator(source='auto', target=target_lang)
-            translated_text = translator.translate(segment.content)
+            src_lang = 'zh-CN' if _contains_cjk(segment.content) else 'auto'
+            try:
+                translator = GoogleTranslator(source=src_lang, target=target_lang)
+                translated_text = translator.translate(segment.content)
+            except Exception:
+                translated_text = None
             
-            if translated_text == segment.content and _contains_cjk(segment.content):
-                zh_translator = GoogleTranslator(source='zh-CN', target=target_lang)
-                translated_text = zh_translator.translate(segment.content)
+            if (
+                not translated_text
+                or "Error 500" in str(translated_text)
+                or "Server Error" in str(translated_text)
+                or str(translated_text).startswith("Error")
+                or (translated_text == segment.content and _contains_cjk(segment.content))
+            ):
+                try:
+                    from deep_translator import MyMemoryTranslator
+                    mm_target = "vi-VN" if target_lang.lower().startswith("vi") else target_lang
+                    mm_src = "zh-CN" if _contains_cjk(segment.content) else "auto"
+                    translated_text = MyMemoryTranslator(source=mm_src, target=mm_target).translate(segment.content)
+                except Exception:
+                    pass
 
             if not isinstance(translated_text, str) or not translated_text.strip():
                 raise RuntimeError("Google Translate returned an empty result")
