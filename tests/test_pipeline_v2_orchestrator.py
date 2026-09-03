@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from backend.pipeline_v2 import ArtifactStore, FingerprintSet, ManifestStore
-from backend.pipeline_v2.config import PipelineMode, PipelineSettings
+from backend.pipeline_v2.config import PipelineMode, PipelineSettings, QCGatePolicy
 from backend.pipeline_v2.orchestrator import (
     PipelineContext,
     PipelineOrchestrator,
@@ -21,6 +21,7 @@ class PipelineSettingsTests(unittest.TestCase):
         self.assertTrue(settings.preserve_source_resolution)
         self.assertTrue(settings.enable_auto_gender)
         self.assertTrue(settings.enable_timing_solver)
+        self.assertEqual(settings.qc_gate_policy, QCGatePolicy.BLOCK)
 
     def test_auto_gender_can_be_disabled_explicitly(self):
         settings = PipelineSettings.from_env({"ENABLE_AUTO_GENDER": "false"})

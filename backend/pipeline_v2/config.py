@@ -64,7 +64,7 @@ class PipelineSettings:
     atempo_max: float = 1.40
     target_lufs: float = -15.0
     true_peak_max_dbtp: float = -1.0
-    qc_gate_policy: QCGatePolicy = QCGatePolicy.REPORT_ONLY
+    qc_gate_policy: QCGatePolicy = QCGatePolicy.BLOCK
     gpu_lock_timeout_seconds: float = 1800.0
     stage_timeout_seconds: float = 3600.0
     translation_batch_segments: int = 80
@@ -106,7 +106,7 @@ class PipelineSettings:
         env = environment if environment is not None else os.environ
         mode_value = env.get("PIPELINE_MODE", PipelineMode.V2.value).strip().lower()
         qc_value = env.get(
-            "QC_GATE_POLICY", QCGatePolicy.REPORT_ONLY.value
+            "QC_GATE_POLICY", QCGatePolicy.BLOCK.value
         ).strip().lower()
         try:
             mode = PipelineMode(mode_value)
