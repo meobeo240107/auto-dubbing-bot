@@ -219,6 +219,7 @@ async def apply_rvc_clone(
         def run_rvc_with_method(method="rmvpe"):
             global global_rvc_instance, global_rvc_model_path
             import torch
+            torch.backends.cudnn.enabled = False
             from rvc_python.infer import RVCInference
             if global_rvc_instance is None:
                 global_rvc_instance = RVCInference(device="cuda:0" if torch.cuda.is_available() else "cpu")

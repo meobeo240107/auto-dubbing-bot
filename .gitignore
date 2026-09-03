@@ -38,4 +38,6 @@ temp_burn*
 .DS_Store
 Thumbs.db
 .idea/
+*.exe
+*.disabled*
 .vscode/

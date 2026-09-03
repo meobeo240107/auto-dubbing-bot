@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -20,18 +20,38 @@ os.environ["PIPELINE_MODE"] = "legacy"
 from batch_processor import process_single_local_video
 
 async def main():
-    video_path = r"D:\video phôi\1788280024245_video.mp4"
-    output_dir = r"D:\banve"
-    print(f"🎬 [Tool V1] Bắt đầu xử lý: {video_path}", flush=True)
+    input_dir = Path(r"D:\video phôi")
+    output_dir = Path(r"D:\banve")
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    async def progress(msg):
-        print(f"⏱️ [Tool V1] {msg}", flush=True)
+    video_files = []
+    for f in sorted(input_dir.glob("*.mp4")):
+        if " (1)" in f.name:
+            continue
+        video_files.append(f)
         
-    success = await process_single_local_video(video_path, output_dir, progress)
-    if success:
-        print(f"🎉 [Tool V1] HOÀN TẤT THÀNH CÔNG! Đã lưu vào {output_dir}", flush=True)
-    else:
-        print(f"❌ [Tool V1] Thất bại!", flush=True)
+    print(f"🎬 [Tool V1] Tìm thấy {len(video_files)} video trong {input_dir}:", flush=True)
+    for vf in video_files:
+        print(f" - {vf.name}", flush=True)
+        
+    for vf in video_files:
+        dest_check = list(output_dir.glob(f"*{vf.stem}*.mp4"))
+        if dest_check:
+            print(f"\n⏩ Video {vf.name} đã được render tại {dest_check[0].name}. Tiếp tục video tiếp theo...", flush=True)
+            continue
+            
+        print(f"\n==========================================", flush=True)
+        print(f"🚀 [Tool V1] Bắt đầu xử lý: {vf.name}", flush=True)
+        print(f"==========================================", flush=True)
+        
+        async def progress(msg):
+            print(f"⏱️ [Tool V1] {msg}", flush=True)
+            
+        success = await process_single_local_video(str(vf), str(output_dir), progress)
+        if success:
+            print(f"🎉 [Tool V1] HOÀN TẤT THÀNH CÔNG: {vf.name} -> {output_dir}", flush=True)
+        else:
+            print(f"❌ [Tool V1] Xử lý thất bại: {vf.name}", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())

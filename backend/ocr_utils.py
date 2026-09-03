@@ -11,9 +11,9 @@ reader = None
 def get_ocr_reader():
     global reader
     if reader is None:
-        logger.info("Initializing EasyOCR reader (GPU=True)...")
-        # Gỡ bỏ 'en' để tránh EasyOCR bị ảo giác (nhận diện nhầm nhiễu thành chữ tiếng Anh)
-        reader = easyocr.Reader(['ch_sim'])
+        logger.info("Initializing EasyOCR reader (CPU mode for safe stability)...")
+        # Dùng CPU cho EasyOCR để tránh lỗi xung đột cudnnGetLibConfig Error code 127
+        reader = easyocr.Reader(['ch_sim'], gpu=False)
     return reader
 
 def release_ocr_reader():

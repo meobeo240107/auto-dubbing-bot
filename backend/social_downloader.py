@@ -210,10 +210,12 @@ def download_parallel_range(url: str, dest_path: str, workers: int = 6, max_retr
                     if getattr(shared_state, 'stop_requested', False):
                         return part_name, False
                     try:
+                        import socket
+                        socket.setdefaulttimeout(15)
                         p_req = urllib.request.Request(url)
                         p_req.add_header('User-Agent', USER_AGENTS["desktop"])
                         p_req.add_header('Range', f'bytes={current_start}-{end}')
-                        with urllib.request.urlopen(p_req, timeout=12) as p_resp:
+                        with urllib.request.urlopen(p_req, timeout=15) as p_resp:
                             require_partial_content(
                                 getattr(p_resp, "status", p_resp.getcode()),
                                 p_resp.headers,
