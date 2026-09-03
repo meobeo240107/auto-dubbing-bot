@@ -139,8 +139,10 @@ class RuntimeModelPolicy:
     def gemini_candidates(self) -> Tuple[str, ...]:
         return ordered_unique(
             self.gemini_model,
+            "gemini-flash-latest",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
+            "gemini-flash-lite-latest",
             "gemini-3.5-flash-lite",
         )
 

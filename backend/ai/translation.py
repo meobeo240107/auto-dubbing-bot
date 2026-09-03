@@ -291,6 +291,7 @@ Dữ liệu:
         logger.debug(f"Lỗi dịch G4F: {e}")
     return None
 
+
 def translate_subtitles(
     srt_segments,
     target_lang="vi",
@@ -407,12 +408,37 @@ def translate_subtitles(
             
         try:
             segment.orig_content = segment.content
-            translator = GoogleTranslator(source='auto', target=target_lang)
-            translated_text = translator.translate(segment.content)
-            
-            if translated_text == segment.content and _contains_cjk(segment.content):
-                zh_translator = GoogleTranslator(source='zh-CN', target=target_lang)
-                translated_text = zh_translator.translate(segment.content)
+            # Dùng zh-CN trực tiếp nếu là tiếng Trung để tránh lỗi Error 500 do endpoint mobile auto-detect của Google
+            src_lang = 'zh-CN' if _contains_cjk(segment.content) else 'auto'
+            translator = GoogleTranslator(source=src_lang, target=target_lang)
+            try:
+                translated_text = translator.translate(segment.content)
+            except Exception as tr_err:
+                from deep_translator.exceptions import TranslationNotFound
+                if isinstance(tr_err, TranslationNotFound):
+                    try:
+                        from deep_translator import MyMemoryTranslator
+                        mm_target = "vi-VN" if target_lang.lower().startswith("vi") else target_lang
+                        translated_text = MyMemoryTranslator(source="zh-CN", target=mm_target).translate(segment.content)
+                    except Exception:
+                        raise tr_err
+                else:
+                    raise tr_err
+
+            if (
+                not translated_text
+                or "Error 500" in translated_text
+                or "Server Error" in translated_text
+                or translated_text.startswith("Error")
+            ):
+                if src_lang == 'zh-CN':
+                    try:
+                        alt_trans = GoogleTranslator(source='auto', target=target_lang)
+                        alt_text = alt_trans.translate(segment.content)
+                        if alt_text and not ("Error 500" in alt_text or "Server Error" in alt_text or alt_text.startswith("Error")):
+                            translated_text = alt_text
+                    except Exception:
+                        pass
 
             if not isinstance(translated_text, str) or not translated_text.strip():
                 raise RuntimeError("Google Translate returned an empty result")
