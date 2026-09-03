@@ -81,7 +81,7 @@ Chạy file run_batch_edit.bat để render toàn bộ video có trong thư mụ
 ```powershell
 .\backend\venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 ```
-Kết quả hiện tại: 110/110 tests đạt chuẩn.
+Kết quả hiện tại: 115/115 tests đạt chuẩn.
 
 ---
 

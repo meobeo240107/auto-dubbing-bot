@@ -2,7 +2,6 @@
 Telegram Bot - Auto Video Dubbing
 Gửi link video → Bot tự động tải, tạo phụ đề, lồng tiếng, gửi lại video.
 """
-import torch
 import os
 import sys
 import asyncio
@@ -72,6 +71,7 @@ if isinstance(sys.stderr, io.TextIOWrapper):
 from ai.transcription import extract_subtitles_whisper, save_srt
 from ai.translation import translate_subtitles
 from ai.voice_cloning import generate_dubbing_audio
+from telegram_jobs import TelegramJobPaths, build_v2_completion_caption
 from url_utils import extract_http_urls
 from video_utils import extract_audio_from_video, mix_audio_pydub, process_video
 
@@ -163,7 +163,7 @@ async def safe_edit_status(status_msg, text, parse_mode=None, retries=3):
 async def run_pipeline_v2_for_telegram(
     video_path, out_dir, final_video, status_msg, delivery_copy_path=None
 ):
-    """Run the opt-in v2 pipeline while legacy remains the default."""
+    """Build and run one production V2 request for the Telegram adapter."""
 
     from pipeline_v2.config import PipelineSettings
     from pipeline_v2.video_pipeline import (
@@ -197,6 +197,26 @@ async def run_pipeline_v2_for_telegram(
         progress=progress,
     )
     return await VideoPipelineRunner(request).run()
+
+
+async def process_v2_telegram_job(video_path, paths, title, status_msg):
+    """Run and report the shared production V2 path for every Telegram input."""
+
+    started_at = time.time()
+    await run_pipeline_v2_for_telegram(
+        video_path,
+        str(paths.job_directory),
+        str(paths.final_video),
+        status_msg,
+        delivery_copy_path=str(paths.delivery_copy),
+    )
+    caption = build_v2_completion_caption(
+        title=title,
+        output_directory=OUTPUT_DIR,
+        elapsed_seconds=time.time() - started_at,
+        remaining_jobs=global_queue.qsize(),
+    )
+    await safe_edit_status(status_msg, caption, parse_mode="Markdown")
 
 
 def snapshot_legacy_telegram_run(
@@ -511,7 +531,6 @@ async def video_worker():
 
 async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, pos: int = 1):
     original_url = url
-    chat_id = update.message.chat_id
 
     # Thông báo bắt đầu
     remaining = global_queue.qsize()
@@ -521,10 +540,6 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
         parse_mode="Markdown"
     )
 
-    import subprocess
-    import sys
-    CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
-
     download_dir = os.path.join(WORKSPACE, "downloads")
     os.makedirs(download_dir, exist_ok=True)
     timestamp = str(int(time.time()))
@@ -532,8 +547,6 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # Lấy UUID ngẫu nhiên để tránh trùng tên khi tải hàng loạt
     import uuid
     uid = str(uuid.uuid4())[:8]
-    output_template = os.path.join(download_dir, f"{timestamp}_{uid}_%(title).30s.%(ext)s")
-
     try:
         import shared_state
         if shared_state.stop_requested: raise Exception("Bị hủy bởi lệnh /stop")
@@ -561,50 +574,25 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             return
 
-        downloaded_files = [os.path.basename(video_path)]
-        base_name = os.path.splitext(downloaded_files[0])[0].rstrip('.')
+        base_name = os.path.splitext(os.path.basename(video_path))[0].rstrip('.')
 
-        # Chuẩn bị thư mục output
-        out_dir = os.path.join(WORKSPACE, base_name)
-        os.makedirs(out_dir, exist_ok=True)
-
-        original_audio = os.path.join(out_dir, "original.wav")
-        srt_original = os.path.join(out_dir, "original.srt")
-        srt_translated = os.path.join(out_dir, "translated.srt")
-        dubbing_dir = os.path.join(out_dir, "dubbing")
-        mixed_audio = os.path.join(out_dir, "mixed.wav")
-        final_video = os.path.join(out_dir, f"final_{base_name}.mp4")
+        paths = TelegramJobPaths.create(WORKSPACE, OUTPUT_DIR, base_name)
+        paths.prepare_directories()
+        out_dir = str(paths.job_directory)
+        original_audio = str(paths.original_audio)
+        srt_original = str(paths.original_srt)
+        srt_translated = str(paths.translated_srt)
+        dubbing_dir = str(paths.dubbing_directory)
+        mixed_audio = str(paths.mixed_audio)
+        final_video = str(paths.final_video)
 
         from pipeline_v2.config import PipelineMode, PipelineSettings
         if PipelineSettings.from_env().mode is PipelineMode.V2:
-            start_time = time.time()
-            downloads_dir = r"D:\banve"
-            os.makedirs(downloads_dir, exist_ok=True)
-            local_save_path = os.path.join(downloads_dir, f"Dubbed_{base_name}.mp4")
-            await run_pipeline_v2_for_telegram(
+            await process_v2_telegram_job(
                 video_path,
-                out_dir,
-                final_video,
+                paths,
+                video_title if "video_title" in locals() else base_name,
                 status_msg,
-                delivery_copy_path=local_save_path,
-            )
-            elapsed_time = int(time.time() - start_time)
-            mins = elapsed_time // 60
-            secs = elapsed_time % 60
-            time_str = f"{mins} phút {secs} giây" if mins > 0 else f"{secs} giây"
-            remaining = global_queue.qsize()
-            queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
-            caption = (
-                f"✅ *Video đã lồng tiếng Tiếng Việt (Pipeline v2 - Âm thanh Studio)!*\n\n"
-                f"🎬 Video: `{video_title if 'video_title' in locals() else base_name}`\n"
-                f"💾 Đã tự động lưu vào máy: `D:\\banve`\n"
-                f"⏱️ Thời gian xử lý: {time_str}"
-                f"{queue_status}"
-            )
-            await safe_edit_status(
-                status_msg,
-                caption,
-                parse_mode="Markdown",
             )
             return
 
@@ -976,46 +964,24 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
         await file.download_to_drive(video_path, read_timeout=600, connect_timeout=600, pool_timeout=600, write_timeout=600)
         
         base_name = os.path.splitext(safe_filename)[0]
-        out_dir = os.path.join(WORKSPACE, base_name)
-        os.makedirs(out_dir, exist_ok=True)
-
-        original_audio = os.path.join(out_dir, "original.wav")
-        srt_original = os.path.join(out_dir, "original.srt")
-        srt_translated = os.path.join(out_dir, "translated.srt")
-        dubbing_dir = os.path.join(out_dir, "dubbing")
-        mixed_audio = os.path.join(out_dir, "mixed.wav")
-        final_video = os.path.join(out_dir, f"final_{base_name}.mp4")
+        paths = TelegramJobPaths.create(WORKSPACE, OUTPUT_DIR, base_name)
+        paths.prepare_directories()
+        out_dir = str(paths.job_directory)
+        original_audio = str(paths.original_audio)
+        srt_original = str(paths.original_srt)
+        srt_translated = str(paths.translated_srt)
+        dubbing_dir = str(paths.dubbing_directory)
+        mixed_audio = str(paths.mixed_audio)
+        final_video = str(paths.final_video)
 
         start_time = time.time()
         from pipeline_v2.config import PipelineMode, PipelineSettings
         if PipelineSettings.from_env().mode is PipelineMode.V2:
-            downloads_dir = r"D:\banve"
-            os.makedirs(downloads_dir, exist_ok=True)
-            local_save_path = os.path.join(downloads_dir, f"Dubbed_{base_name}.mp4")
-            await run_pipeline_v2_for_telegram(
+            await process_v2_telegram_job(
                 video_path,
-                out_dir,
-                final_video,
+                paths,
+                filename,
                 status_msg,
-                delivery_copy_path=local_save_path,
-            )
-            elapsed_time = int(time.time() - start_time)
-            mins = elapsed_time // 60
-            secs = elapsed_time % 60
-            time_str = f"{mins} phút {secs} giây" if mins > 0 else f"{secs} giây"
-            remaining = global_queue.qsize()
-            queue_status = f"\n⏳ Phía sau còn {remaining} video đang chờ xử lý..." if remaining > 0 else "\n🎉 Đã hoàn tất toàn bộ hàng đợi!"
-            caption = (
-                f"✅ *Video đã lồng tiếng Tiếng Việt (Pipeline v2 - Âm thanh Studio)!*\n\n"
-                f"🎬 Video: `{filename}`\n"
-                f"💾 Đã tự động lưu vào máy: `D:\\banve`\n"
-                f"⏱️ Thời gian xử lý: {time_str}"
-                f"{queue_status}"
-            )
-            await safe_edit_status(
-                status_msg,
-                caption,
-                parse_mode="Markdown",
             )
             return
 

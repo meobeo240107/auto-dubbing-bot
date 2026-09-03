@@ -18,7 +18,7 @@ bộ thay đổi ổn định hóa Pipeline v2 trong vòng review cuối.
 
 ## Kết quả kiểm định hiện tại
 
-- 110/110 unit và regression tests đạt.
+- 115/115 unit và regression tests đạt.
 - Preflight Telegram: 32/32 đạt, `ready=True`.
 - E2E đủ các stage đạt QC 12/12, không cảnh báo.
 - CUDA RTX 4050, FFmpeg/ffprobe và NVENC đã được xác minh.

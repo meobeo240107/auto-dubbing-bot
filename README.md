@@ -24,6 +24,9 @@ lồng tiếng RVC và render/QC bằng FFmpeg.
 
 ## 🛠️ Cấu trúc thư mục
 - `backend/`: Mã nguồn Python xử lý AI, OCR, RVC và Telegram Bot.
+- `backend/ai/source_separation.py`: Chính sách BS-RoFormer và Demucs fallback.
+- `backend/pipeline_v2/content.py`: Hàm thuần cho SRT, OCR geometry và tìm model RVC.
+- `backend/telegram_jobs.py`: Chuẩn hóa đường dẫn và thông báo job Telegram V2.
 - `frontend/`: Giao diện ứng dụng (Desktop / Electron / Vite UI).
 - `start_bot.bat`: Script khởi động Bot nhanh trên Windows.
 
