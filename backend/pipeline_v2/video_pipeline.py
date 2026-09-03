@@ -743,12 +743,16 @@ class VideoPipelineRunner:
                 segment_payload = segments_to_dicts(segments)
             if not segment_payload:
                 raise RuntimeError("ASR returned no speech segments")
-            from .gender_detector import enrich_segments_with_gender
-            runtime_segs = segments_from_dicts(segment_payload)
-            enriched_segs = await asyncio.to_thread(
-                enrich_segments_with_gender, runtime_segs, speech
-            )
-            segment_payload = segments_to_dicts(enriched_segs)
+            if self.request.settings.enable_auto_gender:
+                from .gender_detector import enrich_segments_with_gender
+                runtime_segs = segments_from_dicts(segment_payload)
+                enriched_segs = await asyncio.to_thread(
+                    enrich_segments_with_gender, runtime_segs, speech
+                )
+                segment_payload = segments_to_dicts(enriched_segs)
+            else:
+                for item in segment_payload:
+                    item["gender"] = "female"
             return [
                 self.artifact_store.put_file("transcript/original.srt", srt_path),
                 self.artifact_store.put_json(
