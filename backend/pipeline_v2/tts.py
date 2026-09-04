@@ -25,6 +25,7 @@ async def generate_tts_audio_v2(
     api_key: str = "",
     policy: TimingPolicy = None,
     strict_provider: bool = False,
+    enable_auto_gender: bool = False,
 ) -> List[Dict[str, Any]]:
     """Generate TTS and apply at most the configured light atempo correction."""
 
@@ -47,7 +48,7 @@ async def generate_tts_audio_v2(
             fitted = output / "{}.mp3".format(segment.index)
             text = str(segment.content).strip()
             seg_gender = str(getattr(segment, "gender", "female") or "female").lower()
-            if seg_gender == "male":
+            if enable_auto_gender and seg_gender == "male":
                 try:
                     await asyncio.to_thread(
                         _run_capcut_tts, text, str(raw), "BV075_streaming"
@@ -121,5 +122,4 @@ async def generate_tts_audio_v2(
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
-
 

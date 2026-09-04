@@ -72,7 +72,7 @@ V2_STAGE_ORDER = (
 # Bump this value whenever artifact semantics change.  It participates in the
 # manifest fingerprint so an upgraded runner cannot silently reuse output from
 # an older implementation that happened to have the same environment flags.
-PIPELINE_IMPLEMENTATION_VERSION = "2.3.0"
+PIPELINE_IMPLEMENTATION_VERSION = "2.3.1"
 
 
 class QCGateBlocked(RuntimeError):
@@ -887,6 +887,7 @@ class VideoPipelineRunner:
                     "segments": segments_to_dicts(batch),
                     "voice_source": source,
                     "voice_param": self.request.voice_param,
+                    "enable_auto_gender": self.request.settings.enable_auto_gender,
                     "atempo_min": policy.atempo_min,
                     "atempo_max": policy.atempo_max,
                     "actual_timing_rewrite": actual_rewriter is not None,
@@ -940,6 +941,7 @@ class VideoPipelineRunner:
                         api_key=self.request.tts_api_key or self.request.api_key,
                         policy=policy,
                         strict_provider=True,
+                        enable_auto_gender=self.request.settings.enable_auto_gender,
                     )
 
                 infos = await generate_round(0)
@@ -1041,6 +1043,7 @@ class VideoPipelineRunner:
                 {
                     "pipeline_implementation_version": PIPELINE_IMPLEMENTATION_VERSION,
                     "tts": batch,
+                    "enable_auto_gender": self.request.settings.enable_auto_gender,
                     "model": self.manifest.fingerprints.model_sha256.get("rvc", ""),
                     "atempo_min": policy.atempo_min,
                     "atempo_max": policy.atempo_max,
@@ -1081,7 +1084,7 @@ class VideoPipelineRunner:
                 for info in batch:
                     gender = str(info.get("gender", "female") or "female").lower()
                     inp_path = str(self._artifact_path(info["artifact_key"]))
-                    if gender == "male":
+                    if self.request.settings.enable_auto_gender and gender == "male":
                         male_items.append({
                             "index": info["index"],
                             "output_path": inp_path,
