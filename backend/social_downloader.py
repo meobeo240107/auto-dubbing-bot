@@ -10,6 +10,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 try:
     from .pipeline_v2.atomic_io import atomic_replace_file
+    from .douyin_direct import (
+        DouyinDirectError,
+        configured_cookie_file,
+        resolve_douyin_video,
+    )
     from .pipeline_v2.download_validation import (
         DownloadValidationError,
         probe_downloaded_video,
@@ -18,6 +23,11 @@ try:
     )
 except ImportError:  # Running telegram_bot.py directly from backend/ on Windows.
     from pipeline_v2.atomic_io import atomic_replace_file
+    from douyin_direct import (
+        DouyinDirectError,
+        configured_cookie_file,
+        resolve_douyin_video,
+    )
     from pipeline_v2.download_validation import (
         DownloadValidationError,
         probe_downloaded_video,
@@ -142,7 +152,30 @@ def download_douyin_tiktok(url: str, output_dir: str, prefix: str) -> tuple:
         target_urls.insert(0, f"https://www.douyin.com/video/{video_id}")
         target_urls.insert(1, f"https://www.iesdouyin.com/share/video/{video_id}/")
 
-    # Chiến lược 1: TikWM Multi-platform API
+    resolver_error = ""
+
+    # Chiến lược 1 (chỉ Douyin): API web chính chủ + X-Bogus, dựa trên
+    # jiji262/douyin-downloader. Ưu tiên luồng CDN sạch có bitrate cao nhất.
+    if video_id and any(host in url.lower() for host in ("douyin.com", "iesdouyin.com")):
+        try:
+            info = resolve_douyin_video(video_id)
+            safe_title = clean_filename(info.title)
+            target_path = os.path.join(output_dir, f"{prefix}_{safe_title}.mp4")
+            for media_url in info.media_urls:
+                if download_file_stream(
+                    media_url,
+                    target_path,
+                    headers=dict(info.download_headers),
+                    timeout=(10, 90),
+                ):
+                    logger.info("Tải thành công Douyin trực tiếp: %s", target_path)
+                    return True, target_path, info.title, ""
+            resolver_error = "Douyin đã trả metadata nhưng các CDN video đều thất bại"
+        except DouyinDirectError as exc:
+            resolver_error = str(exc)
+            logger.warning("Douyin direct resolver không thành công: %s", resolver_error)
+
+    # Chiến lược 2: TikWM Multi-platform API (không cần cookie).
     for t_url in target_urls:
         try:
             api_url = "https://www.tikwm.com/api/"
@@ -166,7 +199,8 @@ def download_douyin_tiktok(url: str, output_dir: str, prefix: str) -> tuple:
         except Exception as e:
             logger.warning(f"TikWM thử link {t_url} lỗi: {e}")
 
-    return False, "", "", "Không thể bóc tách link Douyin qua API"
+    error = resolver_error or "Không thể bóc tách link Douyin/TikTok qua API"
+    return False, "", "", error
 
 import urllib.request
 import concurrent.futures
@@ -465,8 +499,12 @@ def download_social_video(url: str, output_dir: str, prefix: str) -> tuple:
         "--retries", "3",
         "--user-agent", USER_AGENTS["desktop"],
         "--referer", "https://www.douyin.com/",
-        clean_target_url
     ]
+    if "douyin.com" in lower_url:
+        cookie_file = configured_cookie_file()
+        if cookie_file:
+            cmd_download.extend(["--cookies", cookie_file])
+    cmd_download.append(clean_target_url)
     
     try:
         configured_timeout = float(

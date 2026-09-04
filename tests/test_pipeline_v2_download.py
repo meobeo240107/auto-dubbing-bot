@@ -121,6 +121,107 @@ class DownloadProbeTests(unittest.TestCase):
         self.assertIn("không tồn tại", error)
 
 
+class DouyinDirectTests(unittest.TestCase):
+    def test_xbogus_matches_upstream_vector(self):
+        from backend.douyin_direct import DOUYIN_USER_AGENT, _XBogus
+
+        url = (
+            "https://www.douyin.com/aweme/v1/web/aweme/detail/"
+            "?aid=6383&aweme_id=7676769981752790308"
+        )
+        with patch("backend.douyin_direct.time.time", return_value=1700000000):
+            signed = _XBogus(DOUYIN_USER_AGENT).build(url)
+        self.assertEqual(
+            signed,
+            url + "&X-Bogus=DFSzswVYM3hANj00tmWx-e9WX7jU",
+        )
+
+    def test_resolver_prefers_highest_clean_direct_cdn(self):
+        from backend.douyin_direct import resolve_douyin_video
+
+        response = SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "aweme_detail": {
+                    "aweme_id": "7676769981752790308",
+                    "desc": "video thử nghiệm",
+                    "video": {
+                        "bit_rate": [
+                            {
+                                "bit_rate": 500000,
+                                "play_addr": {
+                                    "width": 720,
+                                    "height": 1280,
+                                    "url_list": ["https://low.example/video.mp4"],
+                                },
+                            },
+                            {
+                                "bit_rate": 2000000,
+                                "play_addr": {
+                                    "width": 1080,
+                                    "height": 1920,
+                                    "url_list": [
+                                        "https://water.example/playwm/video.mp4",
+                                        "https://high.example/video.mp4?watermark=0",
+                                    ],
+                                },
+                            },
+                        ]
+                    },
+                }
+            },
+        )
+        session = SimpleNamespace(get=lambda *args, **kwargs: response)
+        info = resolve_douyin_video(
+            "7676769981752790308", session=session, environment={}
+        )
+        self.assertEqual(info.title, "video thử nghiệm")
+        self.assertEqual(info.media_urls[0], "https://high.example/video.mp4?watermark=0")
+        self.assertNotIn("playwm", "\n".join(info.media_urls))
+
+    def test_cookie_file_supports_netscape_format_without_logging_value(self):
+        from backend.douyin_direct import load_douyin_cookies
+
+        with tempfile.TemporaryDirectory() as directory:
+            cookie_file = Path(directory) / "cookies.txt"
+            cookie_file.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t0\tmsToken\tsecret-token\n"
+                "#HttpOnly_.douyin.com\tTRUE\t/\tTRUE\t0\tttwid\tweb-token\n"
+                ".example.com\tTRUE\t/\tTRUE\t0\tignored\tsecret\n",
+                encoding="utf-8",
+            )
+            cookies = load_douyin_cookies({"DOUYIN_COOKIE_FILE": str(cookie_file)})
+        self.assertEqual(cookies, {"msToken": "secret-token", "ttwid": "web-token"})
+
+    def test_social_downloader_uses_direct_resolver_before_tikwm(self):
+        from backend import social_downloader
+        from backend.douyin_direct import DouyinVideoInfo
+
+        info = DouyinVideoInfo(
+            title="direct",
+            media_urls=("https://cdn.example/clean.mp4",),
+            download_headers={"User-Agent": "test"},
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            social_downloader, "resolve_douyin_video", return_value=info
+        ) as resolver, patch.object(
+            social_downloader, "download_file_stream", return_value=True
+        ), patch.object(
+            social_downloader.requests, "post"
+        ) as tikwm:
+            ok, path, title, error = social_downloader.download_douyin_tiktok(
+                "https://www.douyin.com/video/7676769981752790308",
+                directory,
+                "job",
+            )
+        self.assertTrue(ok)
+        self.assertTrue(path.endswith("job_direct.mp4"))
+        self.assertEqual(title, "direct")
+        self.assertEqual(error, "")
+        resolver.assert_called_once_with("7676769981752790308")
+        tikwm.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
-
