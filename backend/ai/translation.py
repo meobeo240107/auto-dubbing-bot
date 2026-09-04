@@ -15,6 +15,12 @@ import requests
 import base64
 import re
 from deep_translator import GoogleTranslator
+try:
+    from deep_translator import MyMemoryTranslator
+except ImportError:
+    # Keep provider discovery deterministic. A late import could escape test or
+    # runtime dependency isolation and unexpectedly make a network request.
+    MyMemoryTranslator = None
 import logging
 
 logger = logging.getLogger(__name__)
@@ -435,7 +441,8 @@ def translate_subtitles(
                 or (translated_text == segment.content and _contains_cjk(segment.content))
             ):
                 try:
-                    from deep_translator import MyMemoryTranslator
+                    if MyMemoryTranslator is None:
+                        raise RuntimeError("MyMemoryTranslator is unavailable")
                     mm_target = "vi-VN" if target_lang.lower().startswith("vi") else target_lang
                     mm_src = "zh-CN" if _contains_cjk(segment.content) else "auto"
                     translated_text = MyMemoryTranslator(source=mm_src, target=mm_target).translate(segment.content)

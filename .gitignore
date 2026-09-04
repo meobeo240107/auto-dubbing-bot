@@ -1,6 +1,7 @@
 # Local environments and secrets
 backend/venv/
 backend/venv_old/
+backend/model_venv/
 venv/
 env/
 *.env
@@ -30,6 +31,7 @@ temp_burn*
 *.srt
 
 # Large optional model assets
+/models/
 *.pth
 *.index
 *.onnx

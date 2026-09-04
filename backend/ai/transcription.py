@@ -12,6 +12,8 @@ import srt
 from datetime import timedelta
 from faster_whisper import WhisperModel
 
+from .v1_model_policy import current_v1_model_policy
+
 
 def _word_aligned_bounds(segment):
     """Return the audible speech bounds instead of Whisper's coarse chunk bounds."""
@@ -99,29 +101,46 @@ def _merge_short_fragments(segments):
         merged.append(current)
     return merged
 
-def extract_subtitles_whisper(audio_path, output_srt_path, num_workers=2):
-    print(f"Transcribing {audio_path} with Faster-Whisper Large-v3...")
+def _transcribe_once(audio_path, model_name, num_workers, download_root=None):
+    """Run one ASR model and always release its CPU/GPU memory."""
+
     import torch, gc
     num_threads = max((os.cpu_count() or 4) - 1, 2)
     worker_count = max(1, int(num_workers))
-    
+
+    model = None
     if torch.cuda.is_available():
-        print(f"🚀 CUDA detected: {torch.cuda.get_device_name(0)}. Loading Whisper Large-v3...")
+        print(
+            "🚀 CUDA detected: {}. Loading Faster-Whisper {}...".format(
+                torch.cuda.get_device_name(0), model_name
+            )
+        )
         model = WhisperModel(
-            "large-v3",
+            model_name,
             device="cuda",
             compute_type="int8_float16",
             num_workers=worker_count,
+            download_root=download_root,
         )
     else:
-        print(f"⚡ Loading Whisper Large-v3 on CPU ({num_threads} threads)...")
-        model = WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=num_threads)
-        
+        print(
+            "⚡ Loading Faster-Whisper {} on CPU ({} threads)...".format(
+                model_name, num_threads
+            )
+        )
+        model = WhisperModel(
+            model_name,
+            device="cpu",
+            compute_type="int8",
+            cpu_threads=num_threads,
+            download_root=download_root,
+        )
+
     try:
-        segments, info = model.transcribe(
-            audio_path, 
-            beam_size=5, 
-            vad_filter=True, 
+        segments, _info = model.transcribe(
+            audio_path,
+            beam_size=5,
+            vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=600, threshold=0.4),
             condition_on_previous_text=False,
             temperature=[0.0, 0.2, 0.4],
@@ -138,28 +157,68 @@ def extract_subtitles_whisper(audio_path, output_srt_path, num_workers=2):
             start, end = _word_aligned_bounds(segment)
             transcribed_segments.append({"start": start, "end": end, "text": text})
 
-        merged_segments = _merge_short_fragments(transcribed_segments)
-        
-        srt_segments = []
-        for i, seg in enumerate(merged_segments, start=1):
-            sub = srt.Subtitle(
-                index=i,
-                start=timedelta(seconds=seg["start"]),
-                end=timedelta(seconds=seg["end"]),
-                content=seg["text"].strip()
-            )
-            srt_segments.append(sub)
-        
-        with open(output_srt_path, "w", encoding="utf-8") as f:
-            f.write(srt.compose(srt_segments))
-        
-        return srt_segments
+        return _merge_short_fragments(transcribed_segments)
     finally:
-        del model
+        if model is not None:
+            del model
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         print("🧹 Đã giải phóng bộ nhớ RAM/VRAM của Whisper AI.")
+
+
+def extract_subtitles_whisper(audio_path, output_srt_path, num_workers=2):
+    """Transcribe with V1's fast model, falling back to the proven model."""
+
+    policy = current_v1_model_policy()
+    failures = []
+    merged_segments = None
+    selected_model = None
+    whisper_cache = os.path.join(policy.model_cache_directory, "faster_whisper")
+    os.makedirs(whisper_cache, exist_ok=True)
+    for model_name in policy.whisper_candidates:
+        print(
+            "Transcribing {} with Faster-Whisper {}...".format(
+                audio_path, model_name
+            )
+        )
+        try:
+            merged_segments = _transcribe_once(
+                audio_path,
+                model_name,
+                num_workers,
+                download_root=whisper_cache,
+            )
+            selected_model = model_name
+            break
+        except Exception as exc:
+            failures.append("{}: {}".format(model_name, exc))
+            print(
+                "⚠️ Faster-Whisper {} không dùng được; thử model dự phòng: {}".format(
+                    model_name, exc
+                )
+            )
+
+    if merged_segments is None:
+        raise RuntimeError(
+            "All V1 Whisper models failed: {}".format(" | ".join(failures))
+        )
+
+    print("✅ V1 ASR hoàn tất bằng Faster-Whisper {}.".format(selected_model))
+    srt_segments = []
+    for i, seg in enumerate(merged_segments, start=1):
+        sub = srt.Subtitle(
+            index=i,
+            start=timedelta(seconds=seg["start"]),
+            end=timedelta(seconds=seg["end"]),
+            content=seg["text"].strip(),
+        )
+        srt_segments.append(sub)
+
+    with open(output_srt_path, "w", encoding="utf-8") as output_file:
+        output_file.write(srt.compose(srt_segments))
+
+    return srt_segments
 
 def save_srt(srt_segments, output_path):
     with open(output_path, "w", encoding="utf-8") as f:

@@ -12,6 +12,14 @@ global_rvc_instance = None
 global_rvc_model_path = None
 
 
+def rvc_runtime_available():
+    """Return whether the optional legacy RVC engine can actually be imported."""
+
+    import importlib.util
+
+    return importlib.util.find_spec("rvc_python") is not None
+
+
 def discover_rvc_index(model_path):
     """Find a real RVC feature index, including training-prefixed names."""
     from pathlib import Path
@@ -209,6 +217,15 @@ async def apply_rvc_clone(
     async with rvc_semaphore:
         print(f"Applying RVC model from {model_path} to {input_audio}...")
         import traceback
+
+        if not rvc_runtime_available():
+            if strict:
+                raise RuntimeError("RVC runtime is unavailable")
+            import shutil
+
+            print("⚠️ rvc-python chưa sẵn sàng; dùng trực tiếp giọng TTS dự phòng.")
+            shutil.copy(input_audio, output_audio)
+            return
 
         try:
             if os.path.exists(output_audio):

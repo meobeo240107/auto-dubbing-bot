@@ -48,6 +48,7 @@ def separate_vocals_demucs(
     import subprocess
     import sys
     import os
+    from ai.v1_model_policy import current_v1_model_policy
     
     # Resolve đường dẫn tuyệt đối để tránh lỗi ký tự đặc biệt và ".."
     input_audio_path = os.path.abspath(input_audio_path)
@@ -65,7 +66,9 @@ def separate_vocals_demucs(
             venv_python = sys.executable  # Fallback
         
         cpu_jobs = max(1, (os.cpu_count() or 4) - 1)
-        model_name = "htdemucs"
+        # V1 deliberately keeps the fast single-model Demucs profile.  The
+        # heavier ensemble/RoFormer models belong to V2 and are not imported.
+        model_name = current_v1_model_policy().demucs_model
         
         # Tối ưu hóa siêu tốc:
         # 1. -n htdemucs: Bản 1 model nhanh gấp 4 lần htdemucs_ft (4 models)

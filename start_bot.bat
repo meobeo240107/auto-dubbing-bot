@@ -12,9 +12,9 @@ if not exist "%PYTHON_EXE%" (
   exit /b 1
 )
 
-:: Fail early with a readable dependency/config report.
+:: Kiểm tra riêng cho Tool V1; không yêu cầu hoặc kích hoạt Pipeline V2.
 cd /d "%PROJECT_DIR%backend"
-"%PYTHON_EXE%" -m pipeline_v2.preflight --project-root "%PROJECT_DIR%" --interface all
+"%PYTHON_EXE%" v1_preflight.py --project-root "%PROJECT_DIR%" --interface telegram
 if errorlevel 1 (
   echo [ERROR] Preflight that bai. Sua cac muc error o tren roi chay lai.
   pause
@@ -36,9 +36,7 @@ start /b cmd /c "npm run dev"
 :: Đợi 2 giây để Frontend kịp chạy
 ping 127.0.0.1 -n 3 > NUL
 
-:: Dọn dẹp tiến trình telegram_bot cũ nếu có để tránh chạy trùng lặp
-powershell -Command "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object { $_.CommandLine -like '*telegram_bot.py*' } | Stop-Process -Force" >NUL 2>&1
-
-:: Khởi động Backend (Telegram Bot) ngầm
+:: Khóa riêng trong AUTODUB_WORKSPACE chặn V1 chạy trùng. Không dừng bất kỳ
+:: telegram_bot.py khác vì tiến trình đó có thể là Tool V2.
 cd /d "%PROJECT_DIR%backend"
 start /b "" "%PYTHON_EXE%" telegram_bot.py

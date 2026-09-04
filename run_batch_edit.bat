@@ -19,7 +19,7 @@ if not exist ".\venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-call ".\venv\Scripts\python.exe" -m pipeline_v2.preflight --project-root "%~dp0" --interface batch
+call ".\venv\Scripts\python.exe" "v1_preflight.py" --project-root "%~dp0" --interface batch
 if errorlevel 1 (
   echo [ERROR] Preflight that bai.
   pause

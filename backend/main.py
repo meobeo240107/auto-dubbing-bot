@@ -5,6 +5,9 @@ import os
 import asyncio
 from pathlib import Path
 
+# The API in this worktree is Tool V1 only, regardless of inherited variables.
+os.environ["PIPELINE_MODE"] = "legacy"
+
 from ai.transcription import extract_subtitles_whisper, save_srt
 from ai.translation import translate_subtitles
 from ai.voice_cloning import generate_dubbing_audio

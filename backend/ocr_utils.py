@@ -1,9 +1,18 @@
 import cv2
-import easyocr
 import logging
 from deep_translator import GoogleTranslator
 import difflib
+import os
 import re
+import tempfile
+from pathlib import Path
+
+from ai.v1_model_policy import current_v1_model_policy
+from ai.v1_model_runtime import (
+    V1ModelRuntimeError,
+    run_v1_ocr,
+    runtime_module_available,
+)
 
 logger = logging.getLogger(__name__)
 reader = None
@@ -13,6 +22,8 @@ def get_ocr_reader():
     if reader is None:
         logger.info("Initializing EasyOCR reader (CPU mode for safe stability)...")
         # Dùng CPU cho EasyOCR để tránh lỗi xung đột cudnnGetLibConfig Error code 127
+        import easyocr
+
         reader = easyocr.Reader(['ch_sim'], gpu=False)
     return reader
 
@@ -28,12 +39,77 @@ def release_ocr_reader():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+
+def _readtext_batch(frames):
+    """Recognize sampled frames with PP-OCRv6 Tiny, then fall back safely."""
+
+    policy = current_v1_model_policy()
+    if policy.ocr_backend in {"auto", "paddle"} and runtime_module_available(
+        "paddleocr", policy
+    ):
+        try:
+            with tempfile.TemporaryDirectory(prefix="autodub-v1-ocr-frames-") as temporary:
+                paths = []
+                for index, frame in enumerate(frames):
+                    path = Path(temporary) / "frame_{:04d}.png".format(index)
+                    if not cv2.imwrite(str(path), frame):
+                        raise OSError("Could not write OCR frame {}".format(path))
+                    paths.append(str(path))
+
+                result = run_v1_ocr(
+                    {
+                        "images": paths,
+                        "detection_model": policy.paddle_detection_model,
+                        "recognition_model": policy.paddle_recognition_model,
+                        "engine": policy.paddle_engine,
+                    },
+                    timeout_seconds=float(
+                        os.getenv("V1_OCR_TIMEOUT_SECONDS", "900")
+                    ),
+                    policy=policy,
+                )
+                by_path = {
+                    str(item.get("path")): item.get("rows", [])
+                    for item in result.get("images", [])
+                }
+                output = []
+                for path in paths:
+                    rows = []
+                    for item in by_path.get(path, []):
+                        bbox = item.get("bbox", [])
+                        text = str(item.get("text", "") or "")
+                        score = float(item.get("score", 0.0) or 0.0)
+                        if len(bbox) >= 4 and text.strip():
+                            rows.append((bbox, text, score))
+                    output.append(rows)
+                if len(output) != len(frames):
+                    raise RuntimeError("PP-OCRv6 returned an incomplete frame batch")
+                logger.info(
+                    "PP-OCRv6 Tiny completed %d sampled frames via %s",
+                    len(frames),
+                    policy.paddle_engine,
+                )
+                return output
+        except (V1ModelRuntimeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.warning("PP-OCRv6 Tiny failed; falling back to EasyOCR: %s", exc)
+
+    easy_reader = get_ocr_reader()
+    return [
+        easy_reader.readtext(
+            frame,
+            detail=1,
+            paragraph=False,
+            mag_ratio=1.0,
+            width_ths=0.7,
+        )
+        for frame in frames
+    ]
+
 def extract_silent_subtitles_from_gaps(gap_segments, target_lang="vi", api_key=None):
     return []
 
 def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=None, srt_segments=None, **kwargs):
     logger.info(f"Bắt đầu OCR toàn diện trên video {video_path}")
-    reader = get_ocr_reader()
     
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -74,6 +150,7 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
 
     crop_y_start = int(height * 0.05) # Quét từ 5% (bỏ thanh trạng thái)
     crop_y_end = int(height * 0.95)   # đến 95%
+    captured_frames = []
 
     for current_time, target_seg in target_timestamps:
         import shared_state
@@ -99,9 +176,16 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
         else:
             proc_frame = cropped_frame
 
-        # 3. Đọc chữ siêu tốc (để EasyOCR tự xử lý ảnh BGR)
-        results = reader.readtext(proc_frame, detail=1, paragraph=False, mag_ratio=1.0, width_ths=0.7)
-        
+        captured_frames.append((current_time, scale_ratio, proc_frame))
+
+    cap.release()
+    recognized_batches = _readtext_batch(
+        [item[2] for item in captured_frames]
+    ) if captured_frames else []
+
+    for (current_time, scale_ratio, _proc_frame), results in zip(
+        captured_frames, recognized_batches
+    ):
         frame_blocks = []
         for (bbox, text, prob) in results:
             clean_t = text.strip()
@@ -158,9 +242,7 @@ def perform_video_ocr(video_path, target_lang='vi', sample_rate=1.0, api_key=Non
         for mb in merged_frame_blocks:
             all_blocks.append(OCRBlock(mb['text'], current_time - 1.2, current_time + 1.2, 
                                        mb['x_pct'], mb['max_x_pct'], mb['y_pct'], mb['max_y_pct']))
-                
-    cap.release()
-    
+
     # Hàm đếm số lượng chữ Hán
     def count_chinese(text):
         return sum(1 for c in str(text) if '\u4e00' <= c <= '\u9fff')

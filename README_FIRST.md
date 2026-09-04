@@ -1,43 +1,30 @@
-# AutoDub Pipeline v2 — Bàn giao
+# AutoDub Tool V1 — Bàn giao
 
-Thư mục này chứa cây mã nguồn đầy đủ của nhánh `refactor/pipeline-v2` cùng toàn
-bộ thay đổi ổn định hóa Pipeline v2 trong vòng review cuối.
+Đây là cây mã nguồn riêng của nhánh `tool-v1`. Tool V1 dùng cho video đơn giản,
+ưu tiên xử lý nhanh và ít VRAM; không dùng hoặc thay đổi cấu hình Pipeline V2.
 
-## Nội dung
+## Model mặc định
 
-- `backend/`: Downloader, Demucs, Whisper, EasyOCR, Gemini Translation,
-  Timing Solver, TTS, RVC, FFmpeg Mixer, QC Gate, API và Telegram bot.
-- `frontend/`: Electron/React UI, preload bridge, dependencies và production build.
-- `MyVoiceModel_v2/`: model và index RVC hiện có.
-- `tests/`: unit/regression tests Pipeline v2.
-- `docs/`: kiến trúc và hướng dẫn rollout.
-- `.git/`: lịch sử Git của repository.
-- `AutoDub_Pipeline_v2_review.patch`: patch hợp nhất có thể áp dụng lại lên bản
-  gốc của nhánh `refactor/pipeline-v2`.
+- Tách giọng: Demucs `htdemucs` Fast.
+- Nhận dạng: Faster-Whisper `large-v3-turbo`, fallback `large-v3`.
+- OCR: `PP-OCRv6_tiny_det` + `PP-OCRv6_tiny_rec` qua ONNX Runtime,
+  fallback EasyOCR CPU.
+- Dịch: Gemini 3.8 Flash và các provider fallback hiện có.
+- Lồng tiếng: dùng model RVC hiện có khi runtime `rvc-python` tương thích; nếu
+  không thì tự chuyển sang Edge TTS để job vẫn hoàn thành.
 
-## Kết quả kiểm định code
+## Cài đặt
 
-- 125 file Python parse thành công.
-- 72/72 backend tests đạt.
-- Frontend lint và production build đạt.
-- `npm audit`: 0 vulnerability.
-- Patch đã qua `git apply --check`.
+1. Chạy `setup_v1.ps1 -PreloadOCR` để tạo môi trường và tải trước model OCR.
+2. Sao chép `backend/.env.example` thành `backend/.env`, giữ
+   `PIPELINE_MODE=legacy`, rồi điền token/API key riêng của bot V1.
+3. Chạy preflight và xử lý mọi mục `error`:
 
-## Trạng thái máy tại thời điểm bàn giao
+   ```powershell
+   .\backend\venv\Scripts\python.exe .\backend\v1_preflight.py --project-root . --interface telegram
+   ```
 
-Preflight hiện báo `ready=false`: Python chạy ngoài venv còn thiếu Torch,
-TorchAudio, Demucs, EasyOCR, Faster Whisper, FastAPI, Telegram và một số module
-khác; `BOT_TOKEN`/`GEMINI_API_KEY` chưa được cấu hình; Pipeline vẫn ở `legacy`;
-RVC model có mặt nhưng thiếu `rvc-python`. FFmpeg, ffprobe và NVENC đã đạt.
+4. Chạy `start_bot.bat` cho Telegram hoặc `run_batch_edit.bat` cho thư mục máy.
 
-Không chạy production trước khi tạo `backend/venv`, cài dependencies, sao chép
-`backend/.env.example` thành `backend/.env`, điền secrets và nhận kết quả
-`ready=True` từ:
-
-```powershell
-cd backend
-.\venv\Scripts\python.exe -m pipeline_v2.preflight --project-root .. --interface all
-```
-
-Lượt video thật đầu tiên nên dùng `QC_GATE_POLICY=report_only`. Xem checklist
-đầy đủ tại `docs/pipeline_v2_rollout.md`.
+Thành phẩm mặc định được lưu vào `D:\banve`. Script khởi động V1 không dừng
+bất kỳ tiến trình Telegram nào khác, nên không ảnh hưởng bot Tool V2.

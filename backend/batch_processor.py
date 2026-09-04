@@ -34,6 +34,9 @@ if os.path.exists(env_file):
                 k, v = line.strip().split("=", 1)
                 os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
+# The Tool V1 batch entrypoint is permanently isolated from Pipeline V2.
+os.environ["PIPELINE_MODE"] = "legacy"
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 WORKSPACE = os.path.abspath(
     os.getenv("AUTODUB_WORKSPACE", os.path.join(BASE_DIR, "..", "workspace"))
@@ -52,7 +55,7 @@ logger.setLevel(logging.INFO)
 # Import các module AI
 from ai.transcription import extract_subtitles_whisper, save_srt
 from ai.translation import translate_subtitles
-from ai.voice_cloning import generate_dubbing_audio
+from ai.voice_cloning import generate_dubbing_audio, rvc_runtime_available
 from video_utils import extract_audio_from_video, mix_audio_pydub, process_video, separate_vocals_demucs
 from ass_utils import generate_ass_file
 from ocr_utils import perform_video_ocr, release_ocr_reader
@@ -127,10 +130,10 @@ async def process_single_local_video(video_path: str, output_dir: str, progress_
             await notify("❌ Không thể trích xuất âm thanh!")
             return False
 
-        await notify("🧠 Bước 2/6: Meta Demucs đang tách giọng nhân vật và giữ nhạc nền...")
+        await notify("🧠 Bước 2/6: Demucs htdemucs Fast đang tách giọng và giữ nhạc nền...")
         vocals_audio, no_vocals_audio = await asyncio.to_thread(separate_vocals_demucs, original_audio, out_dir)
 
-        await notify("🤖 Bước 3/6: Whisper Large-v3 AI đang nhận dạng giọng nói...")
+        await notify("🤖 Bước 3/6: Faster-Whisper Large-v3 Turbo đang nhận dạng giọng nói...")
         srt_segments = await asyncio.to_thread(extract_subtitles_whisper, vocals_audio, srt_original)
         if not srt_segments:
             await notify("⚠️ Video không có giọng nói để dịch!")
@@ -147,7 +150,7 @@ async def process_single_local_video(video_path: str, output_dir: str, progress_
         finally:
             release_ocr_reader()
 
-        await notify(f"🌐 Bước 4/6: Gemini 3.7 Flash đang dịch ({len(srt_segments)} câu)...")
+        await notify(f"🌐 Bước 4/6: Gemini 3.8 Flash đang dịch ({len(srt_segments)} câu)...")
         translated_segments = await asyncio.to_thread(translate_subtitles, srt_segments, "vi", api_key=GEMINI_API_KEY, video_path=video_path)
         await asyncio.to_thread(save_srt, translated_segments, srt_translated)
 
@@ -174,8 +177,8 @@ async def process_single_local_video(video_path: str, output_dir: str, progress_
             if rvc_model_path:
                 break
                 
-        v_source = "rvc" if rvc_model_path else "edge"
-        v_param = rvc_model_path if rvc_model_path else "vi-VN-HoaiMyNeural"
+        v_source = "rvc" if rvc_model_path and rvc_runtime_available() else "edge"
+        v_param = rvc_model_path if v_source == "rvc" else "vi-VN-HoaiMyNeural"
         
         await notify(f"🗣️ Bước 5/6: Đang lồng tiếng AI ({'Giọng Chí Mai RVC' if v_source == 'rvc' else 'Giọng Hoài My'})...")
         dubbing_audio_files = await generate_dubbing_audio(

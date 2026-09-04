@@ -36,6 +36,10 @@ if os.path.exists(env_file):
                 k, v = line.strip().split("=", 1)
                 os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
+# This entrypoint belongs to the dedicated Tool V1 branch. Never let a stale
+# machine-level variable route its jobs into Pipeline V2.
+os.environ["PIPELINE_MODE"] = "legacy"
+
 # ===== CẤU HÌNH =====
 def configured_secret(name):
     value = os.getenv(name, "").strip()
@@ -60,7 +64,7 @@ if isinstance(sys.stderr, io.TextIOWrapper):
 
 from ai.transcription import extract_subtitles_whisper, save_srt
 from ai.translation import translate_subtitles
-from ai.voice_cloning import generate_dubbing_audio
+from ai.voice_cloning import generate_dubbing_audio, rvc_runtime_available
 from url_utils import extract_http_urls
 from video_utils import extract_audio_from_video, mix_audio_pydub, process_video
 
@@ -169,9 +173,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Facebook / Instagram\n\n"
         "Bot sẽ tự động:\n"
         "1️⃣ Tải video sạch không watermark\n"
-        "2️⃣ Nhận dạng giọng nói (Whisper Large-v3 AI)\n"
-        "3️⃣ Dịch phụ đề sang Tiếng Việt (Gemini 3.7 Flash)\n"
-        "4️⃣ Tách giọng & giữ nhạc nền (Meta Demucs)\n"
+        "2️⃣ Nhận dạng giọng nói (Faster-Whisper Large-v3 Turbo)\n"
+        "3️⃣ Dịch phụ đề sang Tiếng Việt (Gemini 3.8 Flash)\n"
+        "4️⃣ Tách giọng & giữ nhạc nền (Demucs htdemucs Fast)\n"
         "5️⃣ Lồng tiếng Tiếng Việt (Microsoft Neural TTS)\n"
         "6️⃣ Xuất video chất lượng cao lưu vào `D:\\banve`\n\n"
         "📌 *Lệnh hỗ trợ:*\n"
@@ -260,7 +264,7 @@ async def cmd_llm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🧠 *CẤU HÌNH NHÀ CUNG CẤP AI DỊCH THUẬT (LLM)*\n\n"
             f"📍 *Chế độ ưu tiên hiện tại:* `{current_provider.upper()}`\n\n"
-            f"🔹 **Google Gemini (Vision 3.5/3.7):** {gemini_status}\n"
+            f"🔹 **Google Gemini (3.8 Flash + fallback):** {gemini_status}\n"
             f"🔹 **OpenAI ChatGPT (GPT-4o Vision):** {openai_status}\n"
             f"🔹 **DeepSeek-V4 Series (Văn phong Douyin/TikTok):** {deepseek_status}\n\n"
             f"👉 *Cách đổi mô hình ưu tiên:*\n"
@@ -652,14 +656,14 @@ async def process_single_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if rvc_model_path:
                 break
                     
-        v_source = "rvc" if rvc_model_path else "edge"
+        v_source = "rvc" if rvc_model_path and rvc_runtime_available() else "edge"
         v_label = "Giọng Chí Mai (RVC)" if v_source == "rvc" else "Giọng Hoài My"
         await safe_edit_status(
             status_msg,
             f"🗣️ *Bước 5/6:* Đang lồng tiếng AI ({v_label})...",
             parse_mode="Markdown"
         )
-        if rvc_model_path:
+        if v_source == "rvc":
             v_param = rvc_model_path
         else:
             # from audio_analysis import detect_gender
@@ -1036,10 +1040,10 @@ async def process_single_video(update: Update, context: ContextTypes.DEFAULT_TYP
             if rvc_model_path:
                 break
                     
-        v_source = "rvc" if rvc_model_path else "edge"
+        v_source = "rvc" if rvc_model_path and rvc_runtime_available() else "edge"
         v_label = "Giọng Chí Mai (RVC)" if v_source == "rvc" else "Giọng Hoài My"
         await safe_edit_status(status_msg, f"🗣️ Đang lồng tiếng AI ({v_label})...")
-        if rvc_model_path:
+        if v_source == "rvc":
             v_param = rvc_model_path
         else:
             v_param = "vi-VN-HoaiMyNeural"  # Tạm thời cố định giọng nữ
